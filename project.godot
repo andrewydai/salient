@@ -10,9 +10,17 @@ config_version=5
 
 [application]
 
-config/name="Base project to copy"
+config/name="salient"
+run/main_scene="uid://b7bg2opwpf8ec"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://icon.svg"
+
+[autoload]
+
+CommandBus="*uid://dwh32mvu7dsv"
+EventBus="*uid://bwdps010p8ekj"
+GameSimulation="*uid://h3c6p8g0bojy"
+ThemeManager="*uid://bgrs0kwjl7jgp"
 
 [physics]
 
