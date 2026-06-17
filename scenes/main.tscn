@@ -1,3 +1,10 @@
 [gd_scene format=3 uid="uid://b7bg2opwpf8ec"]
 
+[ext_resource type="Script" uid="uid://1k5pesdqou5x" path="res://scripts/map_renderer.gd" id="1_0wfyh"]
+[ext_resource type="Resource" uid="uid://coerh1rkcqbrc" path="res://resources/map_data.tres" id="2_0wfyh"]
+
 [node name="Main" type="Node2D" unique_id=600595507]
+
+[node name="MapRenderer" type="Node2D" parent="." unique_id=903897784]
+script = ExtResource("1_0wfyh")
+map_data = ExtResource("2_0wfyh")

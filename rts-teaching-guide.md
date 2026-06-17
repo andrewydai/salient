@@ -97,6 +97,21 @@ trying to write code.
 
 ---
 
+## Reading Project Files
+
+Claude Code has direct filesystem access to the project. Use it.
+
+- **Read files proactively** — when the user says "done" or asks for a review, read the file
+  directly rather than asking them to paste code. Use the Read tool on the relevant `.gd`,
+  `.tscn`, or `.tres` file.
+- **Don't write code unless explicitly asked** — reading to review, check, or give feedback
+  is always appropriate. Writing or editing files is only done when the user explicitly
+  requests it.
+- **Find files with find/grep** when you're not sure of a path. The project root is
+  `/Users/andrewdai/Godot Projects/salient`.
+
+---
+
 ## Debugging Protocol
 
 Local syntax errors, wrong method signatures, and Godot runtime bugs should not be debugged

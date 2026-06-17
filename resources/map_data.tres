@@ -1,0 +1,147 @@
+[gd_resource type="Resource" script_class="MapData" format=3 uid="uid://coerh1rkcqbrc"]
+
+[ext_resource type="Script" uid="uid://dfaak205u78ke" path="res://resources/map_data.gd" id="1_qyrkh"]
+[ext_resource type="Script" uid="uid://bfu57ogf5fskl" path="res://resources/territory_data.gd" id="2_dleju"]
+
+[sub_resource type="Resource" id="Resource_qyrkh"]
+script = ExtResource("2_dleju")
+id = "iron_hills_0_0"
+display_name = "iron_hills"
+polygon_points = PackedVector2Array(0, 0, 256, 0, 256, 240, 0, 240)
+neighbors = Array[String](["silver_pass_1_0", "westmarch_0_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_dleju"]
+script = ExtResource("2_dleju")
+id = "silver_pass_1_0"
+display_name = "silver_pass"
+polygon_points = PackedVector2Array(256, 0, 512, 0, 512, 240, 256, 240)
+neighbors = Array[String](["iron_hills_0_0", "spine_2_0", "crossroads_1_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_o37s8"]
+script = ExtResource("2_dleju")
+id = "spine_2_0"
+display_name = "spine"
+polygon_points = PackedVector2Array(512, 0, 768, 0, 768, 240, 512, 240)
+neighbors = Array[String](["silver_pass_1_0", "eagle_peak_3_0", "heartland_2_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_lp2mm"]
+script = ExtResource("2_dleju")
+id = "eagle_peak_3_0"
+display_name = "eagle_peak"
+polygon_points = PackedVector2Array(768, 0, 1024, 0, 1024, 240, 768, 240)
+neighbors = Array[String](["spine_2_0", "dragons_rest_4_0", "eastmarch_3_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_tgnnk"]
+script = ExtResource("2_dleju")
+id = "dragons_rest_4_0"
+display_name = "dragons_rest"
+polygon_points = PackedVector2Array(1024, 0, 1280, 0, 1280, 240, 1024, 240)
+neighbors = Array[String](["eagle_peak_3_0", "storm_coast_4_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_yctke"]
+script = ExtResource("2_dleju")
+id = "westmarch_0_1"
+display_name = "westmarch"
+polygon_points = PackedVector2Array(0, 240, 256, 240, 256, 480, 0, 480)
+neighbors = Array[String](["crossroads_1_1", "iron_hills_0_0", "rivermouth_0_2"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_eoeh6"]
+script = ExtResource("2_dleju")
+id = "crossroads_1_1"
+display_name = "crossroads"
+polygon_points = PackedVector2Array(256, 240, 512, 240, 512, 480, 256, 480)
+neighbors = Array[String](["westmarch_0_1", "heartland_2_1", "silver_pass_1_0", "sunken_road_1_2"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_jof84"]
+script = ExtResource("2_dleju")
+id = "heartland_2_1"
+display_name = "heartland"
+polygon_points = PackedVector2Array(512, 240, 768, 240, 768, 480, 512, 480)
+neighbors = Array[String](["crossroads_1_1", "eastmarch_3_1", "spine_2_0", "breadlands_2_2"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_o4dc1"]
+script = ExtResource("2_dleju")
+id = "eastmarch_3_1"
+display_name = "eastmarch"
+polygon_points = PackedVector2Array(768, 240, 1024, 240, 1024, 480, 768, 480)
+neighbors = Array[String](["heartland_2_1", "storm_coast_4_1", "eagle_peak_3_0", "amber_fields_3_2"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_hvy3m"]
+script = ExtResource("2_dleju")
+id = "storm_coast_4_1"
+display_name = "storm_coast"
+polygon_points = PackedVector2Array(1024, 240, 1280, 240, 1280, 480, 1024, 480)
+neighbors = Array[String](["eastmarch_3_1", "dragons_rest_4_0", "saltmarsh_4_2"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_v1s0h"]
+script = ExtResource("2_dleju")
+id = "rivermouth_0_2"
+display_name = "rivermouth"
+polygon_points = PackedVector2Array(0, 480, 256, 480, 256, 720, 0, 720)
+neighbors = Array[String](["sunken_road_1_2", "westmarch_0_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_hygu3"]
+script = ExtResource("2_dleju")
+id = "sunken_road_1_2"
+display_name = "sunken_road"
+polygon_points = PackedVector2Array(256, 480, 512, 480, 512, 720, 256, 720)
+neighbors = Array[String](["rivermouth_0_2", "breadlands_2_2", "crossroads_1_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_0a1eh"]
+script = ExtResource("2_dleju")
+id = "breadlands_2_2"
+display_name = "breadlands"
+polygon_points = PackedVector2Array(512, 480, 768, 480, 768, 720, 512, 720)
+neighbors = Array[String](["sunken_road_1_2", "amber_fields_3_2", "heartland_2_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_h61kq"]
+script = ExtResource("2_dleju")
+id = "amber_fields_3_2"
+display_name = "amber_fields"
+polygon_points = PackedVector2Array(768, 480, 1024, 480, 1024, 720, 768, 720)
+neighbors = Array[String](["breadlands_2_2", "saltmarsh_4_2", "eastmarch_3_1"])
+base_production = 1
+passable = true
+
+[sub_resource type="Resource" id="Resource_080v8"]
+script = ExtResource("2_dleju")
+id = "saltmarsh_4_2"
+display_name = "saltmarsh"
+polygon_points = PackedVector2Array(1024, 480, 1280, 480, 1280, 720, 1024, 720)
+neighbors = Array[String](["amber_fields_3_2", "storm_coast_4_1"])
+base_production = 1
+passable = true
+
+[resource]
+script = ExtResource("1_qyrkh")
+territories = Array[ExtResource("2_dleju")]([SubResource("Resource_qyrkh"), SubResource("Resource_dleju"), SubResource("Resource_o37s8"), SubResource("Resource_lp2mm"), SubResource("Resource_tgnnk"), SubResource("Resource_yctke"), SubResource("Resource_eoeh6"), SubResource("Resource_jof84"), SubResource("Resource_o4dc1"), SubResource("Resource_hvy3m"), SubResource("Resource_v1s0h"), SubResource("Resource_hygu3"), SubResource("Resource_0a1eh"), SubResource("Resource_h61kq"), SubResource("Resource_080v8")])
+starting_positions = {
+0: "rivermouth_0_2",
+1: "dragons_rest_4_0"
+}

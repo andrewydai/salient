@@ -9,25 +9,39 @@
 ## Current State
 
 - **Phase:** 1 — Core Game Loop
-- **Session Number:** 1 (complete)
-- **Current Task:** Ready to begin Session 2
-- **Next Session Goal:** Territory rendering — hand-craft `MapData` resource (15 territories),
-  `Polygon2D` + `CollisionPolygon2D`, `MapRenderer` reads `MapData`, `TerritoryGraph` adjacency list
+- **Session Number:** 2 (complete)
+- **Current Task:** Ready to begin Session 3
+- **Next Session Goal:** EventBus & Observer pattern — define initial signals, refactor
+  `MapRenderer` click handling to emit through EventBus, demonstrate signal-driven decoupling
+  with no direct references between systems
 
 ---
 
 ## What Exists
 
 - `rts-game-design.md` — complete design spec with all Phase 1 decisions settled
-- `rts-teaching-guide.md` — teaching curriculum
+- `rts-teaching-guide.md` — teaching curriculum (now includes a "Reading Project Files" section
+  directing Claude to read source files directly rather than asking for paste)
 - `rts-session-brief.md` — this file
-- Godot 4.6 project at `res://`
-  - Folder structure: `autoloads/`, `resources/`, `scenes/`, `scripts/`, `assets/`
+- Godot 4.6 project at `res://`, window size 1280×720
+  - Folder structure: `autoloads/`, `resources/`, `scenes/`, `scripts/`, `tools/`, `assets/`
   - Autoloads registered: `GameSimulation`, `CommandBus`, `EventBus`, `ThemeManager`
     (all at `res://autoloads/*.gd`, all empty `extends Node` stubs)
   - `res://resources/territory_data.gd` — `TerritoryData` Resource schema
   - `res://resources/map_data.gd` — `MapData` Resource schema
-  - `res://scenes/main.tscn` — base Main scene (Node2D root, no children yet)
+  - `res://resources/map_data.tres` — 15-territory hand-crafted `MapData` instance, 5×3 grid,
+    IDs in `display_name_col_row` format, cardinal adjacency, player starts `rivermouth_0_2`,
+    AI starts `dragons_rest_4_0`
+  - `res://tools/generate_map.gd` — `@tool` `EditorScript` that programmatically generates
+    `map_data.tres` (re-run after any schema or coordinate change)
+  - `res://scripts/map_renderer.gd` — `MapRenderer` `Node2D` script. Reads `MapData` via
+    `@export`, creates `Area2D` + `Polygon2D` + `CollisionPolygon2D` per territory, connects
+    `input_event` signal with `.bind(data.id)`. `_on_territory_input` is a stub.
+  - `res://scripts/territory_graph.gd` — `TerritoryGraph` plain class (`RefCounted`). Methods:
+    `build(map_data)`, `get_neighbors(id)`, `find_path(from, to)` (BFS with `came_from` path
+    reconstruction). Not yet instantiated or owned by any system.
+  - `res://scenes/main.tscn` — Main scene with `MapRenderer` child node, `map_data.tres`
+    assigned to its export
 
 ---
 
@@ -36,11 +50,13 @@
 ### Foundation
 - [x] Project setup: folder structure, Autoloads registered, base scenes
 - [x] `TerritoryData` and `MapData` resources defined
-- [ ] Hand-craft test map (15 territories)
+- [x] Hand-craft test map (15 territories)
 
 ### Map & Graph
-- [ ] Territory rendering: `Polygon2D` + `CollisionPolygon2D` + click detection
-- [ ] `TerritoryGraph`: adjacency list, BFS pathfinding
+- [x] Territory rendering: `Polygon2D` + `CollisionPolygon2D` + click detection
+      (renderer + signal wiring done; click handler stub — InputController fills it later)
+- [x] `TerritoryGraph`: adjacency list, BFS pathfinding
+      (not yet wired into `GameSimulation` — happens when first command needs it)
 
 ### Simulation Core
 - [ ] `GameSimulation` autoload: territory ownership, garrison counts, production tick
@@ -109,11 +125,95 @@
 
 ---
 
+### Session 2
+**Date:** 2026-06-16
+**Status:** Complete
+
+**Tasks completed:**
+- Hand-crafted 15-territory `MapData` resource via `@tool` `EditorScript` (`generate_map.gd`),
+  saved to `res://resources/map_data.tres`. 5×3 grid layout, IDs use `display_name_col_row`
+  format, cardinal adjacency
+- `MapRenderer` (`Node2D`) reads `MapData` via `@export`, instantiates `Area2D` per territory
+  with `Polygon2D` (visual) and `CollisionPolygon2D` (collision/input) children. Signal
+  `input_event` connected via `_on_territory_input.bind(data.id)` to bake territory ID into
+  the callback. Handler stub left for InputController in Session 8.
+- `TerritoryGraph` plain class (implicit `RefCounted`): builds adjacency dictionary from
+  `MapData`, exposes `get_neighbors()`, `find_path()` BFS with `came_from` path reconstruction.
+- `MapRenderer` wired into `main.tscn`; `map_data.tres` assigned in inspector. Project
+  window size set to 1280×720 to match map coordinates.
+- Teaching guide updated: added "Reading Project Files" section instructing Claude to read
+  source files directly rather than ask for paste.
+
+**Concepts taught:**
+- Data/presentation separation as the core architectural principle. Renderer reads data;
+  data has no outbound knowledge. Verified concretely by regenerating `.tres` with new ID
+  format — `MapRenderer` required zero changes.
+- The `.tres` machinery made tangible: user created an empty `MapData` resource in the
+  inspector, saw the `@export` fields and the script binding, resolving the Session 1 fuzziness.
+- Polygon winding order: `Polygon2D` connects vertices in order and closes the loop;
+  self-intersecting winding produces visual garbage (no error).
+- `Area2D` vs `CollisionPolygon2D` — behavior node vs. shape data. Same data-vs-behavior
+  split as the rest of the architecture. "Area" in Godot is the physics-zone sense,
+  not the geometric sense.
+- `@tool` annotation: makes a script execute in the editor's GDScript runtime. Without it,
+  editor scripts are inert.
+- `EditorScript` for one-off generation tasks (run via File > Run in Script editor).
+- Engine singletons (`ResourceSaver`, `Input`, `OS`) vs user-defined Autoloads.
+- `Callable.bind()` — partial application of arguments at signal-connect time; the GDScript
+  equivalent of a Python/TS closure capturing a variable.
+- BFS pathfinding with `came_from` parent-map reconstruction.
+- When to make a scene (`.tscn`) vs. just attach a script: promote to scene when the editor
+  needs to see its internal structure for configuration or reuse.
+
+**Claude observations:**
+- User immediately generalized to a `for row in rows, for col in cols` loop in
+  `generate_map.gd` rather than hardcoding 15 entries. Smart structural instinct.
+- Two bugs caught Socratically and fixed without direct fix: (a) all four adjacency appends
+  were passing the current territory's coordinates instead of the neighbor's, (b) polygon
+  winding order was Z-shape instead of clockwise. User found and explained both.
+- Independent ID format change to include display name (`iron_hills_0_0` vs `0_0`) — small
+  but indicates ownership of the data model.
+- First BFS attempt had a fundamental bug: `prev_ter` initialized once to `from_id`, never
+  updated in the loop, so `came_from` was always pointing to source. User reorganized cleanly
+  after one Socratic nudge ("where does `prev_ter` get updated?"). Result was textbook BFS.
+- Caught the missing-destination bug in `trace_came_from` after one trace request. Reconstruction
+  logic is now correct.
+- Good architectural curiosity: asked unprompted about scene vs. script choice, and about
+  Area2D/CollisionPolygon2D naming asymmetry (which led to a useful detour on what "Area"
+  means in physics-engine terminology).
+- The user's "where do TerritoryGraph and the path-finding live" reasoning was first incorrect
+  (CommandBus) but they self-corrected to GameSimulation with a single nudge about
+  CommandBus's actual role.
+
+**User's Self-Assessment (verbatim):**
+"I think i feel good about what we covered, but i'm still learning and beginning to wonder how i might plan such a large project or architecture myself, a lot of these decisions and principles make sense when shown to me, but i can recall my previous projects and note their immature designs and it shows me i have a lot to learn still"
+
+---
+
 ## Carry-Forward Notes
 
-- **Resources vs. plain classes:** User is fuzzy on why Godot enforces the Resource/Node distinction when Python doesn't. The engine infrastructure (serialization, inspector, reference counting) is the answer — but it will land more concretely in Session 2 when they hand-author territory data in the inspector and see the `.tres` machinery work. Revisit then.
-- **`extends Resource` muscle memory:** User defaulted to `extends Node` twice. Flag gently on any new Resource scripts in future sessions.
+- **Resources vs. plain classes (resolved Session 2):** User saw the `.tres` machinery first-hand
+  by creating an empty `MapData` resource in the inspector before deleting it, and then by
+  generating a populated one via `ResourceSaver`. The fuzziness from Session 1 appears resolved.
+- **`extends Resource` muscle memory:** Did not recur in Session 2 (no new Resource subclasses
+  written). Keep watching when new Resources are added.
 - **Command pattern intuition is strong:** User independently articulated the Command pattern rationale. In Session 4, remind them they had this insight in Session 1 before naming it.
+- **Originating architecture vs. recognizing it (new, Session 2):** User flagged in their
+  self-assessment that they feel architectural principles "make sense when shown" but they
+  wouldn't have originated them. This is the right phase of growth to be in — the curriculum's
+  strategy of *naming each pattern before coding it* is the answer. By the end of Phase 1,
+  the user should be able to name and explain every pattern unprompted. Track this gap:
+  starting Session 6 (Strategy) and Session 8 (Command revisited), have them name the pattern
+  *before* it is introduced — that's the test.
+- **`TerritoryGraph` not yet integrated:** Built and unit-correct, but no system instantiates
+  it yet. `GameSimulation` will own it when `MoveArmyCommand` lands (Session 4).
+- **`_on_territory_input` is a stub:** Wired but does nothing. Session 3 should consider
+  whether the click handler emits through `EventBus` (likely) or whether that's deferred until
+  Session 8 with `InputController`. Probably the right move in Session 3: emit a
+  `territory_clicked(territory_id)` signal as the demonstration of the Observer pattern.
+- **Algorithmic work may need more scaffolding:** BFS implementation took two iterations.
+  When future algorithm-heavy work appears (visibility BFS in Session 10, AI scoring in Phase 4),
+  consider providing more skeletal structure up-front to reduce thrash.
 
 ---
 
