@@ -453,6 +453,13 @@ At the end of every session:
 4. Set "This Session" to the next planned session's content.
 5. Note anything that should carry forward — gaps in understanding to revisit, or a concept
    that landed well that can be built on.
+6. **Prune Carry-Forward Notes.** Walk the existing list and remove or consolidate notes
+   that are now resolved, stale, or redundant with content captured elsewhere (design doc,
+   code, an earlier carry-forward note that subsumes it). Carry-Forward must not grow
+   monotonically — every session that adds notes should also remove some. A note is
+   resolved when (a) the gap it described has been demonstrated closed, (b) the stub it
+   pointed at has been filled in, or (c) it has migrated into the Design Decisions Log.
+   When in doubt, prefer to remove. Stale notes are noisier than missing ones.
 
 Do not summarize the user's self-assessment — record it in their words. That verbatim record
 is more useful than a paraphrase when diagnosing gaps later.

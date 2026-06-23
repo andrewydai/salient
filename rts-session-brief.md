@@ -9,12 +9,14 @@
 ## Current State
 
 - **Phase:** 1 — Core Game Loop
-- **Session Number:** 3 (complete)
-- **Current Task:** Ready to begin Session 4
-- **Next Session Goal:** CommandBus, GameSimulation & the Command pattern — wire up CommandBus
-  as the chokepoint for all state mutations, give GameSimulation real territory ownership and
-  garrison state, introduce `MoveArmyCommand` as a data object (no execution yet). The signals
-  declared today (`territory_owner_changed`, `garrison_changed`) start firing for real reasons.
+- **Session Number:** 4 (complete)
+- **Current Task:** Ready to begin Session 5
+- **Next Session Goal:** Army Entity & State Machines — flesh out `_apply_move_army` to actually
+  spawn an `Army` entity in `GameSimulation` (not just deduct troops), wire `TerritoryGraph` into
+  the simulation so path resolution actually works, implement hop-by-hop movement with `progress`
+  advancing per frame, and introduce `ArmyState` as a formal state machine with explicit legal
+  transitions. The continuous-state-via-prediction framing from Session 3 (`Army.progress` is
+  "visual only," renderer interpolates) finally becomes concrete.
 
 ---
 
@@ -25,9 +27,9 @@
   directing Claude to read source files directly rather than asking for paste)
 - `rts-session-brief.md` — this file
 - Godot 4.6 project at `res://`, window size 1280×720
-  - Folder structure: `autoloads/`, `resources/`, `scenes/`, `scripts/`, `tools/`, `assets/`
+  - Folder structure: `autoloads/`, `resources/`, `scenes/`, `scripts/`, `scripts/commands/`,
+    `tools/`, `assets/`
   - Autoloads registered: `GameSimulation`, `CommandBus`, `EventBus`, `ThemeManager`
-    (all at `res://autoloads/*.gd`, all empty `extends Node` stubs)
   - `res://resources/territory_data.gd` — `TerritoryData` Resource schema
   - `res://resources/map_data.gd` — `MapData` Resource schema
   - `res://resources/map_data.tres` — 15-territory hand-crafted `MapData` instance, 5×3 grid,
@@ -35,25 +37,55 @@
     AI starts `dragons_rest_4_0`
   - `res://tools/generate_map.gd` — `@tool` `EditorScript` that programmatically generates
     `map_data.tres` (re-run after any schema or coordinate change)
-  - `res://scripts/map_renderer.gd` — `MapRenderer` `Node2D` script. Reads `MapData` via
-    `@export`, instantiates a `TerritoryNode` per territory and stores them in
-    `territories_by_id: Dictionary`. Subscribes to `EventBus.territory_owner_changed` and
-    `EventBus.garrison_changed`; dispatches to the corresponding `TerritoryNode` by ID.
-    `_on_territory_input` emits `EventBus.territory_clicked(territory_id)`.
-  - `res://scripts/territory_node.gd` — `TerritoryNode` class (`extends Area2D`). Owns its
-    own `Polygon2D`, `CollisionPolygon2D`, and `Label` children. Exposes a small intentional
-    API: `setup(data)`, `set_owner_color(color)`, `set_garrison_count(n)`. Encapsulates
-    per-territory visual state so handlers never reach inside.
+  - **Commands (new in Session 4):**
+    - `res://scripts/commands/command.gd` — `class_name Command extends RefCounted`. Marker
+      base class. One shared field: `issuer_player_id: String`. Inherited by every concrete
+      command type so the bus has a usable type signature and validation can check who issued.
+    - `res://scripts/commands/move_army_command.gd` — `class_name MoveArmyCommand extends
+      Command`. Pure data: `from_territory: String`, `to_territory: String`, `composition:
+      Dictionary`. No execute() method — anemic-command flavor; `GameSimulation` executes.
+  - **CommandBus (real in Session 4):**
+    - `res://autoloads/command_bus.gd` — `submit(command: Command)`. Dispatches on type
+      (`if command is MoveArmyCommand`), asks `GameSimulation.is_move_legal(command)`, hands
+      to `GameSimulation.apply(command)` if legal. Distinguishes "unknown command type"
+      (warn + return) from "known command, illegal" (warn, drop).
+  - **GameSimulation (real in Session 4):**
+    - `res://autoloads/game_simulation.gd` — constants for `PLAYER_ID_HUMAN`, `PLAYER_ID_AI`,
+      `PLAYER_ID_NEUTRAL`, `TROOP_TYPE_INFANTRY`. State dicts: `territories` (cache of
+      `TerritoryData` by ID — derived, marked as such), `territory_owner`, `territory_garrison`.
+      Lifecycle is **not** in `_ready`: exposes `initialize(data: MapData)` for an orchestrator
+      to call. `apply(command)` dispatches; `_apply_move_army` deducts composition from source
+      garrison and emits `garrison_changed` (no Army entity yet — Session 5). `is_move_legal`
+      checks existence, ownership against `issuer_player_id`, `from != to`, composition is
+      achievable from garrison. Production `Timer` instantiated in `initialize`, ticks every
+      `PRODUCTION_TICK_INTERVAL = 5.0` seconds, increments every territory's garrison by
+      `base_production` and emits `garrison_changed` per territory.
+  - **Main orchestrator (new in Session 4):**
+    - `res://scripts/main.gd` — script attached to the Main scene. Preloads `map_data.tres`,
+      calls `map_renderer.initialize(map)` FIRST, then `GameSimulation.initialize(map)`.
+      Order matters: consumer must be subscribed before producer emits the seed signals.
+  - `res://scripts/map_renderer.gd` — `MapRenderer` `Node2D`. Removed `@export var map_data` —
+    now receives `MapData` via `initialize(data)`. Subscribes to EventBus signals in `_ready`,
+    builds territories in `initialize`. `_garrison_changed_handler` now receives a Dictionary
+    and sums troop counts to a display int.
+  - `res://scripts/territory_node.gd` — `TerritoryNode` (`extends Area2D`). Refactored to use
+    centroid-based positioning: each node is positioned at its polygon's centroid; vertices
+    are stored in local coordinates relative to that position. Owns `polygon_2d`,
+    `coll_polygon_2d`, `garrison_label`, and now `title_label`. Children at local (0,0) live
+    at the territory's true center.
   - `res://scripts/territory_graph.gd` — `TerritoryGraph` plain class (`RefCounted`). Methods:
-    `build(map_data)`, `get_neighbors(id)`, `find_path(from, to)` (BFS with `came_from` path
-    reconstruction). Not yet instantiated or owned by any system.
-  - `res://scripts/dev_keys.gd` — debug-only script attached to `Main`. On key press, emits
-    EventBus signals directly to prove the renderer reacts without any other system running.
-    Keys 1/2 fire `territory_owner_changed`; key 3 fires `garrison_changed`.
-  - `res://autoloads/event_bus.gd` — declares three signals: `territory_clicked(String)`,
-    `territory_owner_changed(String, String)`, `garrison_changed(String, int)`. All typed.
-  - `res://scenes/main.tscn` — Main scene with `MapRenderer` and `dev_keys.gd` as children,
-    `map_data.tres` assigned to `MapRenderer.map_data`
+    `build(map_data)`, `get_neighbors(id)`, `find_path(from, to)` (BFS). **Still not wired into
+    GameSimulation** — Session 5 hooks it in for path resolution in `_apply_move_army`.
+  - `res://scripts/dev_keys.gd` — keys 1/2 still fake `territory_owner_changed` for renderer
+    sanity. Key 3 fakes `garrison_changed`. **Key 4 (new): issues a real `MoveArmyCommand`
+    through `CommandBus.submit(...)` — proves the full pipeline (issuer → bus → validation →
+    sim → garrison mutation → signal → renderer update).**
+  - `res://autoloads/event_bus.gd` — three signals: `territory_clicked(String)`,
+    `territory_owner_changed(String, String)`, `garrison_changed(String, Dictionary)`.
+    The garrison signal payload is now a Dictionary (composition), not an int; consumers
+    sum if they want a display total.
+  - `res://scenes/main.tscn` — Main has `main.gd` attached. Children: `MapRenderer`, `DevKeys`,
+    `Camera2D` (offset (640, 400), zoom (0.75, 0.75) — centers on the 1280×720 map).
 
 ---
 
@@ -71,11 +103,16 @@
       (not yet wired into `GameSimulation` — happens when first command needs it)
 
 ### Simulation Core
-- [ ] `GameSimulation` autoload: territory ownership, garrison counts, production tick
-- [~] `CommandBus` and `EventBus` autoloads wired up
-      (EventBus wired with 3 signals; `MapRenderer` subscribes; `dev_keys.gd` proves emission.
-      CommandBus still an empty stub — Session 4.)
-- [ ] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
+- [x] `GameSimulation` autoload: territory ownership, garrison counts, production tick
+      (Production tick fires every 5s and increments every territory's garrison by
+      `base_production`. Lifecycle moved out of `_ready` into `initialize(map_data)` for
+      orchestrator-driven boot.)
+- [x] `CommandBus` and `EventBus` autoloads wired up
+      (CommandBus dispatches on command type, validates via `is_move_legal`, applies via
+      `apply()`. EventBus garrison signal payload upgraded from int to Dictionary.)
+- [~] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
+      (Validation and source-garrison deduction work end-to-end. Army entity, path
+      resolution via `TerritoryGraph`, and movement are Session 5.)
 
 ### Army Movement & Combat
 - [ ] Army movement along path edges in real time
@@ -289,49 +326,181 @@
 
 ---
 
+### Session 4
+**Date:** 2026-06-22
+**Status:** Complete
+
+**Tasks completed:**
+- `Command` marker base class (`res://scripts/commands/command.gd`) carrying the shared
+  `issuer_player_id: String` field. `MoveArmyCommand` (`move_army_command.gd`) extends it as
+  pure data — `from_territory`, `to_territory`, `composition`. Anemic-command flavor; no
+  `execute()` method.
+- `CommandBus.submit(command: Command)` implemented as the routing chokepoint. Dispatches on
+  type via `is`, asks `GameSimulation.is_move_legal(command)`, hands legal commands to
+  `GameSimulation.apply(command)`. Two distinct warning paths: unknown command type vs.
+  known-but-illegal. Early `return` on unknown to prevent double-warn.
+- `GameSimulation` got real state: `territory_owner`, `territory_garrison` dicts, plus a
+  `territories` lookup cache for `TerritoryData` (derived — annotated as such). Constants
+  for player IDs, troop types. `is_move_legal` checks existence, ownership against issuer,
+  `from != to`, composition is achievable from garrison. `_apply_move_army` deducts
+  composition from source garrison and emits `garrison_changed`. Production `Timer`
+  configured and started in `initialize`; ticks each `PRODUCTION_TICK_INTERVAL` and grows
+  every territory's garrison by `base_production`.
+- Lifecycle inverted: `GameSimulation._ready` no longer self-bootstraps. Exposes
+  `initialize(map_data)` instead. New `res://scripts/main.gd` orchestrates the boot — calls
+  `map_renderer.initialize(map)` first (so the renderer subscribes before producer emits),
+  then `GameSimulation.initialize(map)`. Same shape applied to `MapRenderer`: `@export var
+  map_data` removed, replaced with `initialize(data)`. `Main` is now the single source of
+  truth for "which map is loaded."
+- `TerritoryNode` refactored to centroid-based positioning: each node's `position` is the
+  centroid of its polygon; vertices stored in local space. Children at local (0,0) live at
+  the territory's true world center. Added `title_label` for the display name.
+- `EventBus.garrison_changed` signal payload upgraded from `int` to `Dictionary[String,int]`
+  (composition). `MapRenderer._garrison_changed_handler` sums for display.
+- `dev_keys.gd` gained `KEY_4`: issues a real `MoveArmyCommand` through `CommandBus.submit(...)`.
+  End-to-end proof of pipeline — issuer → bus → validation → sim → garrison deduction →
+  signal → renderer label decrement.
+- Design Decisions Log updated in `rts-game-design.md`: neutral territories produce.
+
+**Concepts taught:**
+- **Command pattern**, named formally and applied. The user's "fireworks" intuition from
+  Session 1 was paid in full. Distinct from the previous flavor (self-executing commands)
+  by name and rationale — we chose **anemic command + external executor** because mutation
+  requires access to private simulation state.
+- **Commands are data, not method calls.** The single mechanical fact that buys serialization,
+  validation, queueing, logging, replay, undo, and network broadcast. Emphasized as the
+  load-bearing claim of the pattern.
+- **Cross-cutting concerns** as the formal name for what the bus centralizes (validation,
+  logging, broadcast, anti-cheat). One chokepoint, one place to add concerns.
+- **Phase 6 networking story made concrete:** server-authoritative, why commands sail over
+  the wire as JSON, why `CommandBus.submit()` is the *one* file that gets wrapped, why every
+  other system is unchanged. Used as the killer justification for the pattern.
+- **Resource vs. plain class (RefCounted)**: content vs. events. Resources for things that
+  exist before runtime, persist on disk, are designer-tunable. Plain classes for transient
+  runtime events. Commands are events → RefCounted. The shared-reference gotcha with
+  Resources mentioned (would require `.duplicate()` everywhere).
+- **Read/write split on `GameSimulation`**: many read methods (`get_territory_owner`,
+  `get_garrison`, `is_move_legal`), exactly one write entry point (`apply`). Discipline
+  not enforcement.
+- **Inversion of Control / Hollywood Principle**: "don't call us, we'll call you." Systems
+  don't decide when to boot; an orchestrator tells them. Connected back to Session 1's data
+  vs. state separation and Session 3's system independence — same shape, different layer.
+- **Bootstrap pull vs. ongoing push** (clarification of Session 3's push-not-pull rule):
+  bootstrap reads are a one-time "where am I in the world?" query that uses the existing
+  read interface. Doesn't violate push-not-pull, which is about *ongoing* signal payloads.
+- **Local vs. world coordinates and the semantic meaning of `node.position`** in Godot. The
+  principle: a node's position should *mean* something. Children at local coords, parents
+  own world position. TerritoryNode positioned at centroid, vertices in local space.
+- **Bottom-up `_ready` order** in the scene tree — children's `_ready` runs before parents'.
+  This is why @export-based wiring "just works" while code-based wiring needs an
+  orchestrator that runs at the right level.
+- **Autoload init order vs scene tree init order** — autoloads `_ready` runs *before* any
+  scene node `_ready`. Root cause of the bootstrap bug the user diagnosed.
+- **Bulk-signal anti-pattern at the local layer** — performance perf-anxiety drove the user
+  to suggest bulking signals; the real fix lives at the network layer, not the local one.
+  Granular events locally + batched snapshots at the network layer is the standard pattern.
+- **Anatomic Godot gotchas as they arose**: `Camera2D.zoom` semantics, `Label` anchors at
+  top-left not center, `push_warning` takes a single string not format args, autoloads
+  cannot use `@export` (no scene file to bind to — use `preload` or `initialize`).
+
+**Claude observations:**
+- User's Session 1 "fireworks" intuition about CommandBus came back online immediately when
+  asked. Listed five specific problems with direct calls including the multiplayer instinct.
+  Very strong opening.
+- Knowledge gap on game networking paradigms admitted honestly when pushed on multiplayer.
+  After a short explainer on server-authoritative architecture, they connected it back to
+  their existing decoupling intuition without further prompting. Good gap-closing reflex.
+- A/B/C decision style: when given multiple options with tradeoffs (Resource vs. RefCounted
+  vs. Dictionary; flat dispatch vs. match vs. lookup table; preload vs. load vs. initialize),
+  the user reasoned aloud and frequently self-corrected mid-thought. They went Dict →
+  Resource → RefCounted on the command type and found the right answer themselves with
+  Socratic nudges.
+- Pushback on "preload locks us to one map" was the highest-quality independent architectural
+  call this session. Led directly to the orchestrator refactor for both `GameSimulation`
+  and `MapRenderer`. Self-driven generalization.
+- The bulk-vs-granular signal debate showed an emerging *engineering* instinct (perf) that
+  was applied at the wrong layer. After the network-batching explanation, the user accepted
+  the answer cleanly. Worth tracking — this is the kind of intuition that's right at scale
+  but needs calibration for *where* in the stack it applies.
+- Inversion of control: the user *arrived at* the orchestrator pattern spontaneously when
+  the bootstrap bug hit (suggested both `call_deferred` and "a more meta game manager"). When
+  asked to name the principle, they said "I'm not sure" — strong evidence of intuiting
+  without language. Worth retesting in Session 5 (state machines) and Session 6 (Strategy)
+  whether they can predict patterns *before* I name them.
+- Implementation bugs in `GameSimulation`: `base_production` field access (read whole
+  TerritoryData instead of the int field — pure crash), Timer never created (feature dead
+  silent), `push_warning` format args (Godot API misunderstanding). All caught via review.
+  These are exactly the kind of "first encounter with API surface" issues the teaching
+  guide says should go to a throwaway session; we handled them inline today. Worth being
+  stricter next time.
+- The centroid loop bug was a beautiful logic error — division *inside* the loop produced a
+  geometric series biased toward the last point, not the average. The polygon-position
+  cancellation that hid it from the polygon rendering while exposing it on labels is a
+  great debugging principle ("when only some children show a bug, the parent transform is
+  probably wrong and the others mask it via accidental cancellation"). Surfaced in passing.
+- Late-session diversion into `Camera2D.zoom`, Label rendering, and Project Settings stretch
+  modes pulled us off the architectural arc. The session ran ~30 minutes longer than the
+  target 2 hours as a result. Note for Session 5: be stricter about deflecting Godot config
+  questions to throwaway sessions per the teaching guide.
+- End-of-session reflection was good but visibly tired. User noted "it is a lot to digest at
+  once" — acknowledge this in Session 5's opening by lowering the cognitive load on the
+  Concept phase. Don't pile on state-machine theory before checking what stuck from today.
+- The user has been doing the "explain it back to a teammate" exercise well. The Command
+  pattern back-explanation was tight and correct on the load-bearing pieces. The "what
+  changes in Phase 6" answer correctly identified the bus + event broadcasting as the
+  flexion points.
+
+**User's Self-Assessment (verbatim):**
+"I think most of the session clicked the command bus is a powerful pattern for organizing state change and there was a wide breadth of changes across the codebase that we touched to clean the project up progressively and encourage good architecture. Nothing's immediately fuzzy but it is a lot to digest at once."
+
+---
+
 ## Carry-Forward Notes
 
-- **Resources vs. plain classes (resolved Session 2):** User saw the `.tres` machinery first-hand
-  by creating an empty `MapData` resource in the inspector before deleting it, and then by
-  generating a populated one via `ResourceSaver`. The fuzziness from Session 1 appears resolved.
-- **`extends Resource` muscle memory:** Did not recur in Session 2 (no new Resource subclasses
-  written). Keep watching when new Resources are added.
-- **Command pattern intuition is strong:** User independently articulated the Command pattern rationale. In Session 4, remind them they had this insight in Session 1 before naming it.
-- **Originating architecture vs. recognizing it (new, Session 2):** User flagged in their
-  self-assessment that they feel architectural principles "make sense when shown" but they
-  wouldn't have originated them. This is the right phase of growth to be in — the curriculum's
-  strategy of *naming each pattern before coding it* is the answer. By the end of Phase 1,
-  the user should be able to name and explain every pattern unprompted. Track this gap:
-  starting Session 6 (Strategy) and Session 8 (Command revisited), have them name the pattern
-  *before* it is introduced — that's the test.
-- **`TerritoryGraph` not yet integrated:** Built and unit-correct, but no system instantiates
-  it yet. `GameSimulation` will own it when `MoveArmyCommand` lands (Session 4).
-- **`_on_territory_input` is a stub:** Wired but does nothing. Session 3 should consider
-  whether the click handler emits through `EventBus` (likely) or whether that's deferred until
-  Session 8 with `InputController`. Probably the right move in Session 3: emit a
-  `territory_clicked(territory_id)` signal as the demonstration of the Observer pattern.
-- **Algorithmic work may need more scaffolding:** BFS implementation took two iterations.
-  When future algorithm-heavy work appears (visibility BFS in Session 10, AI scoring in Phase 4),
-  consider providing more skeletal structure up-front to reduce thrash.
-- **Strong reflection muscle (new, Session 3):** User's end-of-session reflection was
-  unprompted and accurate. Already named the Observer pattern, OCP, and system independence
-  via interface mediation without being asked to. The Session 2 worry about "originating
-  architecture vs. recognizing it" is showing real progress. By Session 6 (Strategy),
-  start asking them to *predict* the pattern from the problem rather than name it after
-  the fact — they may be ready for that test.
-- **Continuous-state-via-prediction is loaded into context (new, Session 3):** Session 5
-  (Army movement) will hit this directly. User has the mental model — `Army.progress` is
-  visual-only, renderer interpolates from sparse signals using its own clock. Recall this
-  framing in Session 5 when implementing `_process(delta)` on the army movement loop.
-  Same framing reappears in Session 10 for `VisibilitySystem` (derived state).
-- **Dev-keys pattern is now in the toolkit:** When future systems need standalone
-  verification before their upstream producers exist (e.g., HUD before selection state,
-  ArmyRenderer before army movement), the dev-keys pattern is the right tool. Reuse it.
-- **`dev_keys.gd` should be removed (or gated) before Phase 6:** Right now it can fake any
-  EventBus signal. Fine for development; not fine if it ships. Either delete it before
-  release or hard-gate it on `OS.is_debug_build()`. Flag this when we cross Phase 6.
-- **Minor cleanup:** `territory_node.gd:24` has a stray tab between `polygon_2d.` and
-  `color`. Cosmetic only; runs correctly. Mention if visiting that file again.
+**User trajectory (long-running):**
+- **Pattern recognition trajectory.** User can now name patterns *after* they're introduced
+  (Command, OCP, Observer, IoC, Strategy preview). Self-Assessment in S2 worried about
+  "originating vs. recognizing"; S3 reflection muscle and S4 spontaneous arrival at the
+  orchestrator pattern (IoC) suggest growth. **Diagnostic for Sessions 5–6:** present the
+  problem first, ask user to predict and name the pattern *before* it is introduced. That
+  is the test for originating-not-recognizing.
+- **Resource vs. RefCounted distinction is live (S4).** Commands are RefCounted; user
+  arrived after wrong-first-instinct (Dict → Resource → RefCounted). Watch whether the
+  distinction is applied unprompted to Army, General, and other runtime-event types from
+  S5 onward.
+- **`extends Resource` muscle memory.** Did not recur since S1. Keep watching when new
+  Resource subclasses appear.
+- **Algorithmic scaffolding.** BFS in S2 took two iterations. For visibility BFS (S10) and
+  AI scoring (Phase 4), provide more skeletal structure up-front.
+- **Bulk-vs-granular signal perf instinct (S4).** User correctly identified perf concern at
+  wrong layer (local). VisibilitySystem in S10 fires per-territory each tick — same shape.
+  If the instinct recurs, redirect to "batch at the network layer, not the local one."
+
+**Session 5 hooks (concrete to-dos for next session):**
+- Wire `TerritoryGraph` into `GameSimulation`. It has been built-but-orphan since S2.
+  `is_move_legal` adds a reachability check (`find_path != null`); `_apply_move_army`
+  uses `find_path` to assign the army's path.
+- Replace the `_apply_move_army` stub: deduct troops at departure (current behavior stays)
+  AND spawn an `Army` plain object (RefCounted) with composition, path, state.
+- **Continuous-state-via-prediction framing from S3 becomes load-bearing.** `Army.progress`
+  is visual-only; renderer interpolates from sparse hop-completion signals using its own
+  `_process(delta)`. Same framing reappears in S10 for VisibilitySystem.
+- **Open S5 lower cognitive load.** User flagged "a lot to digest" after S4. State
+  machines should be the only new Concept block; do not stack additional patterns. Start
+  by checking what stuck from S4 before introducing anything new.
+- **Tighter throwaway-session discipline.** S4 handled multiple Godot-API questions inline
+  (`Camera2D.zoom`, Label anchoring, `push_warning`, Project Settings stretch). Deflect
+  "how does this Godot API work" questions to a side tab; keep teaching context for
+  architecture.
+- **Hard 2-hour stop.** S4 ran ~30 min over. When at concept-saturation, end the session
+  even with cosmetic items unfinished.
+
+**Long-horizon flags:**
+- **Dev-keys pattern is now in the toolkit.** When future systems need standalone
+  verification before their producers exist (HUD before selection, ArmyRenderer before
+  movement), reuse the dev-keys pattern.
+- **`dev_keys.gd` must be removed or gated before Phase 6.** It can fake any EventBus
+  signal. Either delete or hard-gate on `OS.is_debug_build()`. Flag when crossing Phase 6.
 
 ---
 

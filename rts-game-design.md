@@ -561,3 +561,5 @@ is online-only (Phase 6).
 | General spawn threshold | Casualties must exceed a configurable threshold (e.g. 50 troops) | Small skirmishes should not mint generals; reward significant engagements |
 | Building cost currency | Basic infantry deducted from territory garrison | Simplest possible resource model; creates meaningful tradeoff between troops and buildings |
 | Production tick interval | Configurable constant in `GameSimulation` (~5–10 s) | Designer-tunable without touching game logic |
+| Neutral territories | Have starting garrisons and produce troops | Creates meaningful early-expansion friction; players must fight through neutrals to grow their economy rather than free-real-estate the map |
+| Lifecycle orchestration | `Main` script owns boot order; `GameSimulation` and `MapRenderer` expose `initialize(map_data)` instead of self-bootstrapping in `_ready` | Inversion of control: systems don't decide when they boot. Solves the autoload-fires-before-scene-subscribes bug and sets up Phase 5 map selection / Phase 6 server-driven init in the same stroke |

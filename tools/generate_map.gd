@@ -13,7 +13,10 @@ var names = [
 func _run() -> void:
 	var map := MapData.new()
 	map.territories = _build_territories()
-	map.starting_positions = { 0: "rivermouth_0_2", 1: "dragons_rest_4_0" }
+	map.starting_positions = { 
+		"rivermouth_0_2": GameSimulation.PLAYER_ID_HUMAN, 
+		"dragons_rest_4_0": GameSimulation.PLAYER_ID_AI
+	}
 	ResourceSaver.save(map, "res://resources/map_data.tres")
 	print("map_data.tres saved.")
 

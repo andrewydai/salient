@@ -142,6 +142,6 @@ passable = true
 script = ExtResource("1_qyrkh")
 territories = Array[ExtResource("2_dleju")]([SubResource("Resource_qyrkh"), SubResource("Resource_dleju"), SubResource("Resource_o37s8"), SubResource("Resource_lp2mm"), SubResource("Resource_tgnnk"), SubResource("Resource_yctke"), SubResource("Resource_eoeh6"), SubResource("Resource_jof84"), SubResource("Resource_o4dc1"), SubResource("Resource_hvy3m"), SubResource("Resource_v1s0h"), SubResource("Resource_hygu3"), SubResource("Resource_0a1eh"), SubResource("Resource_h61kq"), SubResource("Resource_080v8")])
 starting_positions = {
-0: "rivermouth_0_2",
-1: "dragons_rest_4_0"
+"dragons_rest_4_0": "player_2",
+"rivermouth_0_2": "player_1"
 }

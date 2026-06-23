@@ -1,27 +1,30 @@
 class_name MapRenderer
 extends Node2D
 
-@export var map_data: MapData
+var map_data: MapData
 
 var territories_by_id: Dictionary = {} # String -> TerritoryNode
+
+func initialize(map_data_arg: MapData) -> void:
+	map_data = map_data_arg
+	_build_map()
 
 func _ready() -> void:
 	EventBus.territory_owner_changed.connect(_territory_owner_changed_handler)
 	EventBus.garrison_changed.connect(_garrison_changed_handler)
-	_build_map()
 
 func _color_for_owner(player_id: String) -> Color:
 	if player_id == 'player_1':
 		return Color.RED
 	elif player_id == 'player_2':
 		return Color.BLUE
-	return Color.GREEN_YELLOW
+	return Color.GRAY
 
 func _territory_owner_changed_handler(territory_id: String, new_owner_id: String) -> void:
 	territories_by_id[territory_id].set_owner_color(_color_for_owner(new_owner_id))
 
-func _garrison_changed_handler(territory_id: String, new_total: int) -> void:
-	territories_by_id[territory_id].set_garrison_count(new_total)
+func _garrison_changed_handler(territory_id: String, new_composition: Dictionary) -> void:
+	territories_by_id[territory_id].set_garrison_count(new_composition[GameSimulation.TROOP_TYPE_INFANTRY])
 
 func _build_map() -> void:
 	# iterate map_data.territories and create a node for each

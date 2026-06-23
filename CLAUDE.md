@@ -22,4 +22,6 @@ architecture.
 At session end, follow the wrap protocol: ask for the user's verbatim
 self-assessment, record it in `rts-session-brief.md`, update the Session Log,
 What Exists, Phase 1 Task Checklist, Carry-Forward Notes, and Open Questions
-sections, then announce what the next session will cover.
+sections, prune resolved or stale Carry-Forward Notes (the list must shrink
+when issues resolve, not only grow), then announce what the next session
+will cover.
