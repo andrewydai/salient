@@ -9,14 +9,18 @@
 ## Current State
 
 - **Phase:** 1 — Core Game Loop
-- **Session Number:** 4 (complete)
-- **Current Task:** Ready to begin Session 5
-- **Next Session Goal:** Army Entity & State Machines — flesh out `_apply_move_army` to actually
-  spawn an `Army` entity in `GameSimulation` (not just deduct troops), wire `TerritoryGraph` into
-  the simulation so path resolution actually works, implement hop-by-hop movement with `progress`
-  advancing per frame, and introduce `ArmyState` as a formal state machine with explicit legal
-  transitions. The continuous-state-via-prediction framing from Session 3 (`Army.progress` is
-  "visual only," renderer interpolates) finally becomes concrete.
+- **Session Number:** 5 (complete)
+- **Current Task:** Ready to begin Session 6
+- **Next Session Goal:** Combat & Strategy Pattern. Introduce `CombatResolver` as a base class
+  with a defined contract (`resolve(context) -> CombatResult`) — the first real Strategy-pattern
+  use in the project. Implement `AttritionCombatResolver` (1:1 casualty math) as the concrete
+  subclass. Wire it into `GameSimulation` so the `print('fight')` stub at enemy arrivals becomes
+  a real combat call. Add en-route collision detection on shared edges (direction-agnostic,
+  enemy pairs only). Define `CombatContext` and `CombatResult` data carriers — `CombatResult`
+  uses the WIN/RETREAT/DEFEAT outcome enum agreed in S5. Also lands: friendly-army merging as
+  an entity-lifecycle operation (same primitive as dissolution; user raised it in S5).
+  `CombatResolver` is the first concrete example of the orchestrator/subsystem split — the
+  resolution to the file-size concern user voiced in S5 reflection.
 
 ---
 
@@ -73,17 +77,58 @@
     are stored in local coordinates relative to that position. Owns `polygon_2d`,
     `coll_polygon_2d`, `garrison_label`, and now `title_label`. Children at local (0,0) live
     at the territory's true center.
-  - `res://scripts/territory_graph.gd` — `TerritoryGraph` plain class (`RefCounted`). Methods:
-    `build(map_data)`, `get_neighbors(id)`, `find_path(from, to)` (BFS). **Still not wired into
-    GameSimulation** — Session 5 hooks it in for path resolution in `_apply_move_army`.
+  - `res://scripts/territory_graph.gd` — `TerritoryGraph` plain class. Methods: `build(map_data)`,
+    `get_neighbors(id)`, `find_path(from, to)` (BFS). **Now wired into GameSimulation as of S5
+    — built in `initialize()`, used for reachability check in `is_move_legal` and for full-path
+    resolution in `_apply_move_army`.** `find_path` returns the *full* path including the source
+    territory (`[from, hop1, ..., to]`).
   - `res://scripts/dev_keys.gd` — keys 1/2 still fake `territory_owner_changed` for renderer
-    sanity. Key 3 fakes `garrison_changed`. **Key 4 (new): issues a real `MoveArmyCommand`
-    through `CommandBus.submit(...)` — proves the full pipeline (issuer → bus → validation →
-    sim → garrison mutation → signal → renderer update).**
-  - `res://autoloads/event_bus.gd` — three signals: `territory_clicked(String)`,
-    `territory_owner_changed(String, String)`, `garrison_changed(String, Dictionary)`.
-    The garrison signal payload is now a Dictionary (composition), not an int; consumers
-    sum if they want a display total.
+    sanity. Key 3 fakes `garrison_changed`. Key 4 issues a real `MoveArmyCommand` through
+    `CommandBus.submit(...)` — `rivermouth_0_2 → sunken_road_1_2`. With S5 movement live, this
+    now spawns an Army that ticks across the edge and hits the enemy-arrival `print('fight')`
+    stub (since `sunken_road_1_2` is neutral).
+  - `res://autoloads/event_bus.gd` — six signals: `territory_clicked(String)`,
+    `territory_owner_changed(String, String)`, `garrison_changed(String, Dictionary)`,
+    **`army_spawned(army: Army)`, `army_dissolved(army_id: String)`, `army_advanced_hop(army: Army)`
+    (new in S5).** Note in file: no per-frame progress signals — renderer reads `army.progress`
+    directly each frame (discrete-vs-continuous-state framing from S3 made concrete).
+  - **Army entity (new in S5):**
+    - `res://scripts/army.gd` — `class_name Army extends RefCounted`. `State` enum
+      (`MOVING, FIGHTING, RETREATING`). `const LEGAL_TRANSITIONS` dict encodes the structural
+      transition graph (`MOVING → FIGHTING`; `FIGHTING → MOVING | RETREATING`;
+      `RETREATING → FIGHTING`). No `DISSOLVED` enum value — "gone is gone," entity removed from
+      `armies` dict. Fields: `id`, `owner_id`, `composition`, `path: Array[String]`,
+      `current_edge: Array[String]`, `progress: float`, `state: State`. `can_transition_to(target)`
+      one-liner is the structural-legality API; `GameSimulation` calls it. No `transition_to()` —
+      Army is pure data + schema; simulation owns the transition decision (structural vs
+      contextual layering).
+    - Path representation: **immutable, source preserved** (Option B from S5 discussion).
+      `army.path = [from, hop1, ..., dest]` for the whole army lifetime. Position is tracked via
+      `current_edge`; the helpers use `path.find(current_edge[1])` to advance. Direction flag
+      deferred to S7 when retreat is implemented.
+  - **GameSimulation (expanded in S5):**
+    - Now owns: `armies: Dictionary`, `_next_army_id: int`, `_territory_graph: TerritoryGraph`.
+      `ARMY_MOVE_SPEED: float = 0.5` constant (≈ 2 s/edge).
+    - `initialize(map_data)` now also builds `_territory_graph`.
+    - `is_move_legal` adds a reachability check via `_territory_graph.find_path(...).size() == 0`.
+    - `_apply_move_army` upgraded: deducts garrison (existing) → calls `find_path` → constructs
+      Army (state defaults to `MOVING`, `current_edge = [path[0], path[1]]`) → inserts into
+      `armies` → emits `army_spawned(army)`.
+    - `_process(delta)` collects-then-processes: advances every army's progress by
+      `ARMY_MOVE_SPEED * delta`, collects arrivals (progress ≥ 1.0), calls
+      `_on_army_arrived_at_hop` *after* iteration (safe mutation pattern).
+    - `_on_army_arrived_at_hop(army)` branches on owner of `current_edge[1]` and final-hop
+      status: enemy/neutral → `print('fight')` (Session 6 stub); friendly + final → dissolve;
+      friendly + more hops → advance. Known intentional limitation: army stays in dict after
+      enemy arrival and re-fires every frame ("fight" spams console) until Session 6 introduces
+      `FIGHTING` state transition.
+    - `_dissolve_army_into_garrison`: adds composition into destination garrison, emits
+      `garrison_changed` and `army_dissolved(army.id)`, removes from `armies`.
+    - `_advance_army_to_next_hop`: locates current edge destination in path via `find()`,
+      builds new `current_edge` two hops forward, resets `progress = 0.0`, emits
+      `army_advanced_hop(army)`. Path is never mutated.
+    - Typed-array gotcha applied: `current_edge` assignments use `as Array[String]` casts on
+      array literals (Godot 4 typed arrays reject untyped Array literals on assignment).
   - `res://scenes/main.tscn` — Main has `main.gd` attached. Children: `MapRenderer`, `DevKeys`,
     `Camera2D` (offset (640, 400), zoom (0.75, 0.75) — centers on the 1280×720 map).
 
@@ -110,17 +155,24 @@
 - [x] `CommandBus` and `EventBus` autoloads wired up
       (CommandBus dispatches on command type, validates via `is_move_legal`, applies via
       `apply()`. EventBus garrison signal payload upgraded from int to Dictionary.)
-- [~] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
-      (Validation and source-garrison deduction work end-to-end. Army entity, path
-      resolution via `TerritoryGraph`, and movement are Session 5.)
+- [x] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
+      (Full pipeline lives — `is_move_legal` checks ownership/composition/reachability,
+      `_apply_move_army` spawns a real Army with path resolved via TerritoryGraph and
+      `current_edge` initialized.)
 
 ### Army Movement & Combat
-- [ ] Army movement along path edges in real time
-- [ ] Attrition `CombatResolver`: territory arrival combat
-- [ ] En-route combat: direction-agnostic collision
-- [ ] Retreat mechanic: head-on = can retreat; caught from behind = cannot
-- [ ] Army dissolves into garrison on arrival at friendly territory
-- [ ] Conquest cooldown: captured territories don't produce immediately
+- [x] Army movement along path edges in real time
+      (`_process(delta)` advances `progress` per frame; arrival triggers branching
+      via `_on_army_arrived_at_hop`.)
+- [ ] Attrition `CombatResolver`: territory arrival combat (Session 6 replaces the
+      `print('fight')` stub)
+- [ ] En-route combat: direction-agnostic collision (Session 6)
+- [ ] Retreat mechanic: head-on = can retreat; caught from behind = cannot (Session 7)
+- [x] Army dissolves into garrison on arrival at friendly territory
+      (`_dissolve_army_into_garrison` adds composition, emits signals, removes from dict.)
+- [ ] Conquest cooldown: captured territories don't produce immediately (Session 7)
+- [ ] Friendly army merging on shared edge or into ongoing combat
+      (Raised in S5; same lifecycle primitive as dissolution. Session 6 alongside edge collision.)
 
 ### Input & UI
 - [ ] `InputController`: click to select, click destination to issue move order
@@ -326,6 +378,121 @@
 
 ---
 
+### Session 5
+**Date:** 2026-06-25
+**Status:** Complete
+
+**Tasks completed:**
+- `Army` class (`res://scripts/army.gd`): `class_name Army extends RefCounted`. `State` enum
+  (MOVING/FIGHTING/RETREATING), `LEGAL_TRANSITIONS` const dict, fields (`id, owner_id,
+  composition, path, current_edge, progress, state`), `can_transition_to(target)` one-liner.
+  Pure data + schema; no `transition_to()` method — simulation owns the transition decision.
+- `TerritoryGraph` wired into `GameSimulation` (was orphan since S2): built in `initialize()`,
+  reachability check added to `is_move_legal`.
+- `EventBus` got three new signals: `army_spawned(army: Army)`, `army_dissolved(army_id: String)`,
+  `army_advanced_hop(army: Army)`. Payload-richness rule from S3 applied (live Army ref, not
+  snapshot — defensive copy would break Phase 6 evolution and conflict with the chosen design
+  where renderer reads `army.progress` directly each frame).
+- `GameSimulation` got: `armies` dict, `_next_army_id` counter, `_territory_graph` reference,
+  `ARMY_MOVE_SPEED = 0.5` const, `_process(delta)` collect-then-process loop,
+  `_on_army_arrived_at_hop` four-way branching (owner × final-hop), `_dissolve_army_into_garrison`
+  and `_advance_army_to_next_hop` helpers.
+- `_apply_move_army` upgraded to spawn a real Army: full path from `find_path`, immutable path
+  with source preserved, `current_edge = [path[0], path[1]]`, added to `armies` dict, emits
+  `army_spawned`.
+- Verified end-to-end via dev key 4: garrison decrements at source, progress ticks per frame,
+  arrives at neutral `sunken_road_1_2`, branches to enemy stub (`print('fight')` — expected S6
+  TODO). Console spam from re-firing every frame after arrival is correct-for-S5 behavior;
+  Session 6's `FIGHTING` transition will short-circuit.
+
+**Concepts taught:**
+- **State machine pattern**, formally named. User disclosed OOD/tutorial familiarity up front —
+  saved 15+ min of concept time and let us go deeper on the application. Contract-not-just-labels
+  framing landed without resistance.
+- **Same-state criterion**: two situations are the same state if and only if the legal-operation
+  set is identical. Used to defend Retreating as its own state (not "Moving backward") —
+  Retreating doesn't accept `RedirectArmyCommand`, Moving does, so they're different states.
+- **"Make illegal states unrepresentable" / valid-by-construction.** User landed and rephrased
+  the principle themselves before being told the name: "each state by name defines exactly what
+  state it's in." Strong unprompted articulation.
+- **State name vs state parameters distinction.** Not all data on Army is "state" in the
+  state-machine sense. `path`, `progress`, `current_edge` are *parameters* — describe the
+  specifics within a state, don't change "what's legal next." Crisp rule: state name answers
+  "what's legal next"; parameters answer "the specifics of right now."
+- **Structural vs contextual legality.** Army owns the transition graph (structural); GameSimulation
+  chooses which transition to apply (contextual). Same shape as data-vs-presentation (S1),
+  signal-vs-direct-call (S3), bus-vs-direct-mutation (S4). Same principle, new layer.
+- **State Pattern vs enum + const table.** Pattern's complexity must match the problem's actual
+  complexity. State Pattern earns its keep when per-state behavior is rich (enter/exit hooks,
+  per-state tick logic). For Army's 3 states whose differences are entirely "what's legal next,"
+  enum + const dict beats class hierarchy.
+- **WIN / RETREAT / DEFEAT outcome enum.** Design refinement triggered by user's sharp
+  observation that "losing then retreating" is incoherent. Combat resolves to one of three
+  mutually exclusive outcomes — going into Design Decisions Log.
+- **Merging as entity-lifecycle, not state transition.** Friendly army collision (same edge or
+  into ongoing fight) is the dissolution primitive: merge composition, remove instance, signal.
+  State machine doesn't need to know.
+- **Authority lives where decisions are made.** Sim drives movement cadence via `_process(delta)`
+  because sim makes transition decisions. Armies can't authoritatively drive their own movement
+  when the decision-maker is the sim. Connects back to S4 IoC.
+- **Collect-then-process iteration pattern** for safe mutation of collections during iteration.
+  Phase 1: iterate read-only, collect into side list. Phase 2: act on side list, mutate
+  underlying collection.
+- **Immutable history vs reconstructed mutable state.** Option B (immutable path) is cheaper at
+  retreat time than Option A (mutating path + rebuild on retreat). User self-derived this in Q4.
+  General principle worth filing.
+- **Phase 6 reality check on the S3 "renderer predicts" framing.** Direct in-process reads work
+  in Phase 1 because there's no wire. In Phase 6, sparse-signals + local prediction isn't a
+  preference — it's the only architecture that bandwidth/latency permit. Direct read literally
+  stops working when the wire goes in; the migration is forced.
+- **Typed-array gotcha** (Godot 4 specific). Array literals default to untyped `Array`; assigning
+  into a typed-array property requires explicit `as Array[T]` cast or a typed temp var. Handled
+  inline per teaching-guide "tighter throwaway discipline."
+- **Performance instinct calibration**, take three. User asked about cost of `as Array[String]`
+  casts. Same family as S4 bulk-vs-granular signals: perf intuition is healthy but often fires
+  at the wrong layer. User accepted the framing immediately.
+- **Subsystem extraction preview.** User worried in Reflect about `GameSimulation` file size.
+  Previewed orchestrator/subsystem split: `GameSimulation` delegates to `CombatResolver` (S6),
+  `VisibilitySystem` (S10), `TerritoryGraph` (already done), `AIController` (Phase 4). The
+  resolution to file-size worry is delegation, not per-state class hierarchies for Army.
+
+**Claude observations:**
+- Session opened with rapid recalibration: user disclosed state-machine familiarity in their
+  *first reply*. Saved meaningful concept-phase time and let us go deeper on application. Worth
+  asking this question explicitly at session start in S6+ — "what do you already know about X."
+- Q2 of the diagnostic ("where does legality live") was the strongest moment. User reasoned
+  from a single nudge ("on Army / in GameSim / in CommandBus — tradeoffs?") to the structural-vs-
+  contextual layering. Self-derived, not recognized after introduction.
+- WIN/RETREAT/DEFEAT outcome reframing was unprompted and improved the design materially.
+  Recorded in Decisions Log as user-credited. This is the kind of architectural origination the
+  user worries they can't do — they did it, in this session, on a non-trivial design call.
+- Make-illegal-states-unrepresentable principle was rephrased in user's own words *before*
+  being named. Quote: "each state by name defines exactly what state it's in." Strong
+  pattern-arriving.
+- Option B (immutable path) commit was real architectural ownership. The flaw in their initial
+  implementation (source still popped at spawn) was caught Socratically by reading code together,
+  then they corrected it themselves. Don't rescue prematurely — they get there.
+- Friendly-army-merging concern came up unprompted. They verified the state machine doesn't block
+  it before moving on. Healthy defensive instinct on the just-introduced architecture.
+- Q5 reflection ("worried about GameSimulation file size, expected per-state classes") was a
+  quality architectural concern. It opens the S6 door — `CombatResolver` extraction is the first
+  concrete answer. Preview landed; user can think about orchestrator/subsystem between sessions.
+- User's "originating vs recognizing" self-diagnosis is accurate but slightly too harsh. They
+  named patterns *after* introduction this session (state machine, valid-by-construction). They
+  *originated* specific architectural decisions (Option B, WIN/RETREAT/DEFEAT, no DISSOLVED enum).
+  Mixed-but-trending-positive evidence. Pattern *selection* origination is the next edge.
+- Session ran over the 2-hour target again — conversation spanned three calendar days
+  (2026-06-23 → 2026-06-25). User engagement stayed high and cognitive load did not break down.
+  S4 carry-forward note about "hard 2-hour stop" is now twice violated. Either accept that
+  sessions are 2.5–3 hours for this user or be stricter in S6.
+- Typed-array gotcha was handled inline in <2 min. Good discipline relative to S4's
+  Camera2D/Label rabbit holes.
+
+**User's Self-Assessment (verbatim):**
+"I think i'm in a good state, how the army works is clear and i felt confident coding each part. I think i'm still working at being able to come up with the architecture, the vision and game plan myself but i'm feeling adept at filling out the smaller portions especially when the scaffolding is in place. I know the patterns but i'm not as confident using them beyond a mechanical "oh a state machine is probably good here" which makes me afraid that i'll slip into messy code practice. Overall good though"
+
+---
+
 ### Session 4
 **Date:** 2026-06-22
 **Status:** Complete
@@ -458,49 +625,65 @@
 ## Carry-Forward Notes
 
 **User trajectory (long-running):**
-- **Pattern recognition trajectory.** User can now name patterns *after* they're introduced
-  (Command, OCP, Observer, IoC, Strategy preview). Self-Assessment in S2 worried about
-  "originating vs. recognizing"; S3 reflection muscle and S4 spontaneous arrival at the
-  orchestrator pattern (IoC) suggest growth. **Diagnostic for Sessions 5–6:** present the
-  problem first, ask user to predict and name the pattern *before* it is introduced. That
-  is the test for originating-not-recognizing.
-- **Resource vs. RefCounted distinction is live (S4).** Commands are RefCounted; user
-  arrived after wrong-first-instinct (Dict → Resource → RefCounted). Watch whether the
-  distinction is applied unprompted to Army, General, and other runtime-event types from
-  S5 onward.
-- **`extends Resource` muscle memory.** Did not recur since S1. Keep watching when new
-  Resource subclasses appear.
-- **Algorithmic scaffolding.** BFS in S2 took two iterations. For visibility BFS (S10) and
-  AI scoring (Phase 4), provide more skeletal structure up-front.
-- **Bulk-vs-granular signal perf instinct (S4).** User correctly identified perf concern at
-  wrong layer (local). VisibilitySystem in S10 fires per-territory each tick — same shape.
-  If the instinct recurs, redirect to "batch at the network layer, not the local one."
+- **Pattern recognition → origination trajectory.** S5 evidence is mixed-positive: user
+  named patterns *after* introduction (state machine, valid-by-construction), but
+  *originated* specific architectural decisions unprompted (Option B path, WIN/RETREAT/DEFEAT
+  outcomes, no DISSOLVED enum, friendly-merging concern). Pattern *selection* origination
+  is the next edge. **Diagnostic for S6:** when CombatResolver is introduced, *present the
+  problem* (combat math will change; we'll add troop types, terrain, generals later) and ask
+  user to name the Strategy pattern + sketch the interface *before* it is introduced.
+- **Algorithmic scaffolding.** BFS in S2 took two iterations. State-machine branching in S5
+  was clean. For visibility BFS (S10) and AI scoring (Phase 4), still provide more skeletal
+  structure up-front than for state-machine-style work.
+- **Performance instinct calibration (3rd appearance).** S4: bulk-vs-granular signals. S5:
+  cost of `as Array[String]` casts. Same family, same response, same acceptance. Watch for
+  it in S6 around per-frame army-pair collision detection (genuinely O(N²) where the
+  instinct *would* be correct at scale — calibrate carefully).
+- **File-size / orchestrator-vs-implementer concern (S5).** User worries `GameSimulation`
+  will balloon. S6 CombatResolver extraction is the first concrete answer; flag the pattern
+  again ("this is what we previewed in S5 wrap") so it lands as a recurring move, not a
+  one-off.
 
-**Session 5 hooks (concrete to-dos for next session):**
-- Wire `TerritoryGraph` into `GameSimulation`. It has been built-but-orphan since S2.
-  `is_move_legal` adds a reachability check (`find_path != null`); `_apply_move_army`
-  uses `find_path` to assign the army's path.
-- Replace the `_apply_move_army` stub: deduct troops at departure (current behavior stays)
-  AND spawn an `Army` plain object (RefCounted) with composition, path, state.
-- **Continuous-state-via-prediction framing from S3 becomes load-bearing.** `Army.progress`
-  is visual-only; renderer interpolates from sparse hop-completion signals using its own
-  `_process(delta)`. Same framing reappears in S10 for VisibilitySystem.
-- **Open S5 lower cognitive load.** User flagged "a lot to digest" after S4. State
-  machines should be the only new Concept block; do not stack additional patterns. Start
-  by checking what stuck from S4 before introducing anything new.
-- **Tighter throwaway-session discipline.** S4 handled multiple Godot-API questions inline
-  (`Camera2D.zoom`, Label anchoring, `push_warning`, Project Settings stretch). Deflect
-  "how does this Godot API work" questions to a side tab; keep teaching context for
-  architecture.
-- **Hard 2-hour stop.** S4 ran ~30 min over. When at concept-saturation, end the session
-  even with cosmetic items unfinished.
+**Session 6 hooks (concrete to-dos for next session):**
+- Replace `print('fight')` in `_on_army_arrived_at_hop` with a real `CombatResolver.resolve()`
+  call. Result drives the actual state transition (Fighting → Moving / Retreating / dissolve).
+- Implement en-route collision detection: each `_process` tick, scan army pairs on shared
+  edges. Direction-agnostic per design doc. Enemy pairs → fight; friendly pairs → merge.
+  *Performance note:* this is O(N²) on armies — when user's perf instinct fires here, it'll be
+  fair. Discuss spatial indexing / bucket-by-edge as the natural answer if scale becomes real.
+- Implement friendly-army merging as the same lifecycle primitive as dissolution. Same-edge
+  friendly pair → smaller merges into larger. Arrival into friendly Fighting army → reinforces.
+- `CombatContext` (territory or edge metadata, attacker/defender refs) and `CombatResult`
+  data carriers. `CombatResult.outcome` is the WIN/RETREAT/DEFEAT enum agreed in S5
+  Decisions Log.
+- Introduce `AttritionCombatResolver` as the concrete subclass — simple 1:1 math, no troop
+  types yet.
+- "fight" console spam will resolve naturally once Fighting state transitions are wired —
+  army moves to FIGHTING, `_process` arrival branch no longer re-fires.
+- Strategy pattern: name it, scaffold `CombatResolver` base class with the contract
+  (`resolve(context: CombatContext) -> CombatResult`), then implement the concrete subclass.
+  **First real subsystem extraction** — connect explicitly to the file-size concern user
+  raised in S5 reflection.
+- Open question for S7 (not S6, but flag now so it's not lost): does a retreating army that
+  wins an interception resume retreating or resume original mission? Decided in S5 (resume
+  retreating, not mission) but implementation deferred.
 
 **Long-horizon flags:**
-- **Dev-keys pattern is now in the toolkit.** When future systems need standalone
-  verification before their producers exist (HUD before selection, ArmyRenderer before
-  movement), reuse the dev-keys pattern.
-- **`dev_keys.gd` must be removed or gated before Phase 6.** It can fake any EventBus
-  signal. Either delete or hard-gate on `OS.is_debug_build()`. Flag when crossing Phase 6.
+- **Session cadence.** User confirmed multi-day session spans (S5 ran across three calendar
+  days) are driven by real-world scheduling, not by concept-saturation. Don't optimize for
+  shorter sessions or push to finish in one sitting — the split cadence is fine. Continue to
+  deflect Godot-API questions to throwaway sessions per teaching guide; that's the only
+  session-length lever worth pulling.
+- **Dev-keys pattern is now in the toolkit.** Reuse for future systems that need standalone
+  verification before producers exist (ArmyRenderer before movement existed in S5 — could
+  have used this; instead we relied on garrison labels + console). Worth using more
+  proactively in S6+ for combat visualization.
+- **`dev_keys.gd` must be removed or gated before Phase 6.** It can fake any EventBus signal.
+  Either delete or hard-gate on `OS.is_debug_build()`. Flag when crossing Phase 6.
+- **State Pattern not yet earned.** Army state machine uses enum + const dict. If a future
+  entity has rich per-state behavior (Garrison with Idle/Fortifying/Recruiting modes,
+  Generals with morale states), revisit and use State Pattern. The criterion is in S5
+  concept notes.
 
 ---
 
