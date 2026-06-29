@@ -9,18 +9,20 @@
 ## Current State
 
 - **Phase:** 1 — Core Game Loop
-- **Session Number:** 5 (complete)
-- **Current Task:** Ready to begin Session 6
-- **Next Session Goal:** Combat & Strategy Pattern. Introduce `CombatResolver` as a base class
-  with a defined contract (`resolve(context) -> CombatResult`) — the first real Strategy-pattern
-  use in the project. Implement `AttritionCombatResolver` (1:1 casualty math) as the concrete
-  subclass. Wire it into `GameSimulation` so the `print('fight')` stub at enemy arrivals becomes
-  a real combat call. Add en-route collision detection on shared edges (direction-agnostic,
-  enemy pairs only). Define `CombatContext` and `CombatResult` data carriers — `CombatResult`
-  uses the WIN/RETREAT/DEFEAT outcome enum agreed in S5. Also lands: friendly-army merging as
-  an entity-lifecycle operation (same primitive as dissolution; user raised it in S5).
-  `CombatResolver` is the first concrete example of the orchestrator/subsystem split — the
-  resolution to the file-size concern user voiced in S5 reflection.
+- **Session Number:** 6 (complete)
+- **Current Task:** Ready to begin Session 7
+- **Next Session Goal:** Retreat & Conquest Cooldown. **Open with throwaway fix** of the
+  `_find_collided_army` field-name typo (`edge_obj.is_reversed` → `edge_obj.reversed`,
+  lines 261-262), verified with a head-on multi-army test (one human army + one AI army on
+  opposite ends of the same edge — they should meet mid-edge and collide/merge cleanly).
+  Then main arc: implement retreat as an `ArmyState` transition for the loser of a head-on
+  edge collision (Phase 1 form — automatic, no Command involvement). Note S6 reframe: the
+  *long-term* design has retreat as a Command-layer concern (player issues `RetreatCommand`
+  mid-fight); Phase 1's instant resolution doesn't have a "during fight" moment so retreat
+  collapses to a state-machine transition. Phase 2/3 reintroduces command-driven retreat when
+  sustained combat lands. Also: conquest cooldown for captured territories — set timer on
+  capture, suppress production during cooldown. Stub semantics here; the proper
+  `ConquestCooldownModifier` Resource lives in Phase 3.
 
 ---
 
@@ -89,9 +91,14 @@
     stub (since `sunken_road_1_2` is neutral).
   - `res://autoloads/event_bus.gd` — six signals: `territory_clicked(String)`,
     `territory_owner_changed(String, String)`, `garrison_changed(String, Dictionary)`,
-    **`army_spawned(army: Army)`, `army_dissolved(army_id: String)`, `army_advanced_hop(army: Army)`
-    (new in S5).** Note in file: no per-frame progress signals — renderer reads `army.progress`
-    directly each frame (discrete-vs-continuous-state framing from S3 made concrete).
+    `army_spawned(army: Army)`, `army_dissolved(army_id: String)`, `army_advanced_hop(army: Army)`.
+    Note in file: no per-frame progress signals — renderer reads `army.progress`
+    directly each frame (discrete-vs-continuous-state framing from S3 made concrete). **S6
+    deliberately did NOT add an `army_composition_changed` or `combat_resolved` signal** — the
+    renderer reads composition directly from the live Army ref, and no Phase 1 consumer needs to
+    *react* to the combat event. When reactive consumers appear (Phase 2 UI / audio / AI
+    awareness), the right signal is `combat_resolved(ctx, result)` carrying full event payload,
+    not a value-update signal. Same S3 push-rich-payload rule.
   - **Army entity (new in S5):**
     - `res://scripts/army.gd` — `class_name Army extends RefCounted`. `State` enum
       (`MOVING, FIGHTING, RETREATING`). `const LEGAL_TRANSITIONS` dict encodes the structural
@@ -131,6 +138,55 @@
       array literals (Godot 4 typed arrays reject untyped Array literals on assignment).
   - `res://scenes/main.tscn` — Main has `main.gd` attached. Children: `MapRenderer`, `DevKeys`,
     `Camera2D` (offset (640, 400), zoom (0.75, 0.75) — centers on the 1280×720 map).
+  - **Combat (new in S6):**
+    - `res://scripts/combat/combat_resolver.gd` — `class_name CombatResolver extends RefCounted`.
+      Abstract Strategy base. Inner classes: `TerritoryFight` (territory_id + garrison —
+      bundles the both-or-neither invariant into the type per user's option 2 in S6),
+      `CombatContext` (armies: Array[Army], territory_fight: TerritoryFight or null —
+      perspectiveless, multi-party-shaped from day 1), `CombatResult` (Outcome enum
+      WIN/RETREAT/DEFEAT, outcomes_by_army_id: Dictionary — per-army granularity not per-combat,
+      updated_army_compositions, updated_territory_garrison). `resolve_combat(context) -> result`
+      is the contract — abstract, push_error if unoverridden.
+    - `res://scripts/combat/attrition_combat_resolver.gd` — `class_name AttritionCombatResolver
+      extends CombatResolver`. 4-case binary 1:1 attrition (territory_fight × who-wins
+      permutation). Builds dicts incrementally then assigns to result fields at the end (clean
+      after the GDScript dict-literal computed-key learning).
+  - **GameSimulation (expanded heavily in S6):**
+    - `initialize(map_data, combat_resolver)` — IoC continued, resolver injected at boot.
+    - Holds `_combat_resolver: CombatResolver` field. `main.gd` constructs and passes the
+      `AttritionCombatResolver` instance.
+    - `_on_army_arrived_at_hop` for enemy/neutral arrivals: builds `CombatContext` with single
+      attacker + TerritoryFight, calls `_combat_resolver.resolve_combat(ctx)`, applies via
+      `_apply_combat_result(ctx, result)`.
+    - `_apply_combat_result(ctx, result)` — the integrator. Pass 1 walks
+      `outcomes_by_army_id`: DEFEAT → erase + emit `army_dissolved`; WIN → collect winner;
+      RETREAT → unreachable in Phase 1 (no `RetreatCommand` issued yet — Phase 2/3 form
+      reintroduces it). Pass 2 branches by `ctx.territory_fight != null`: territory WIN updates
+      ownership + garrison + dissolves attacker; territory DEFEAT keeps defender garrison from
+      result + dissolves attacker; edge WIN applies surviving composition to winner army.
+    - `_process(delta)` — extended with en-route collision detection. Phase 1 advances army
+      progress + collects arrivals. Phase 2 (new) groups armies by edge_key, calls
+      `_find_collided_army` to detect crossings (canonical-position projection on [0,1]; only
+      opposite-direction pairs can cross in Phase 1 with uniform speed), collects
+      `collision_events`. Phase 3 processes events with cascade-skip
+      (`if not armies.has(...) continue`) for the "passes two armies in one frame" case.
+    - `_resolve_edge_collision(a, b)` — branches owner_id: enemy → resolve_combat with no
+      territory_fight; friendly → `_merge_armies(a, b)`.
+    - `_merge_armies(a, b)` — smaller dissolves into larger (per S6 user choice: "reinforcing
+      existing army on the move"). Larger absorbs smaller's composition; smaller is erased +
+      `army_dissolved` emitted. Larger keeps its own destination/path.
+    - Helpers: `_edge_key(edge)` returns lexicographic `min->max` form; `_canonical_position(army)`
+      projects progress onto [0,1] forward direction; `_total_troops(army)` sums composition;
+      `_find_collided_army(edge_list, cur_pos, is_reversed)` returns first opposite-direction
+      neighbor whose canonical position has crossed the current army's.
+    - **Known bug (filed for S7 throwaway open):** `_find_collided_army` lines 261-262 use
+      `edge_obj.is_reversed` but the dict key stored at line 70 is `'reversed'`. Field access on
+      missing key silently returns `null` → branch 1's third clause always passes (false
+      positives for same-direction backwards, masked in Phase 1 by uniform-speed gap stability);
+      branch 2's third clause always fails (false negatives — forward armies never detect
+      backward existing entries). Rename and verify with multi-army head-on test.
+  - `res://scripts/main.gd` — now constructs `AttritionCombatResolver` and passes it to
+    `GameSimulation.initialize(map, resolver)`.
 
 ---
 
@@ -164,15 +220,20 @@
 - [x] Army movement along path edges in real time
       (`_process(delta)` advances `progress` per frame; arrival triggers branching
       via `_on_army_arrived_at_hop`.)
-- [ ] Attrition `CombatResolver`: territory arrival combat (Session 6 replaces the
-      `print('fight')` stub)
-- [ ] En-route combat: direction-agnostic collision (Session 6)
-- [ ] Retreat mechanic: head-on = can retreat; caught from behind = cannot (Session 7)
+- [x] Attrition `CombatResolver`: territory arrival combat
+      (Strategy pattern; 4-case binary attrition math; verified end-to-end via dev key 4 —
+      attacker conquers when stronger, repelled when weaker, ownership/garrison signals fire.)
+- [x] En-route combat: direction-agnostic collision
+      (Crossing-detection via canonical-position projection; collect-then-process with
+      cascade-skip. **Field-name typo bug pending S7 throwaway fix** before multi-army
+      head-on test verifies it.)
+- [ ] Retreat mechanic: head-on = can retreat; caught from behind = cannot (Session 7 main arc)
 - [x] Army dissolves into garrison on arrival at friendly territory
       (`_dissolve_army_into_garrison` adds composition, emits signals, removes from dict.)
-- [ ] Conquest cooldown: captured territories don't produce immediately (Session 7)
-- [ ] Friendly army merging on shared edge or into ongoing combat
-      (Raised in S5; same lifecycle primitive as dissolution. Session 6 alongside edge collision.)
+- [ ] Conquest cooldown: captured territories don't produce immediately (Session 7 alongside retreat)
+- [x] Friendly army merging on shared edge or into ongoing combat
+      (S6: smaller dissolves into larger, larger keeps destination — user-chosen convention.
+      `_merge_armies` is the shared lifecycle primitive with `_dissolve_army_into_garrison`.)
 
 ### Input & UI
 - [ ] `InputController`: click to select, click destination to issue move order
@@ -622,51 +683,201 @@
 
 ---
 
+### Session 6
+**Date:** 2026-06-25 → 2026-06-28 (multi-day, continued cadence)
+**Status:** Complete
+
+**Tasks completed:**
+- `CombatResolver` base class (`res://scripts/combat/combat_resolver.gd`) with three inner
+  data carriers (`TerritoryFight`, `CombatContext`, `CombatResult` with `Outcome` enum
+  WIN/RETREAT/DEFEAT). Abstract Strategy contract: `resolve_combat(context) -> result`.
+- `AttritionCombatResolver` (`res://scripts/combat/attrition_combat_resolver.gd`) — 4-case
+  binary 1:1 attrition. Verified end-to-end via dev key 4 (territory conquest succeeds with
+  enough troops, fails with too few; garrison + ownership signals fire correctly).
+- `GameSimulation` integration layer: `_combat_resolver` field, `initialize(map, resolver)`
+  signature (IoC continued from S4), `_apply_combat_result(ctx, result)` two-pass integrator
+  (process per-army outcomes, then apply winner side-effects branched by territory vs edge).
+  Territory WIN updates ownership + garrison + dissolves attacker; territory DEFEAT preserves
+  defender garrison from result + dissolves attacker; edge WIN updates winning army's
+  composition in place.
+- En-route collision detection in `_process`: edge-grouping by canonical `_edge_key`,
+  canonical-position projection (`_canonical_position` maps progress to `[0,1]` in
+  alphabetical direction), `_find_collided_army` checks opposite-direction crossings.
+  Collect-then-process (S5 pattern) into `collision_events`; cascade-skip during processing
+  handles "passes two armies in one frame."
+- Friendly merging (`_merge_armies`): smaller dissolves into larger; larger keeps its
+  destination. Shared lifecycle primitive with `_dissolve_army_into_garrison`.
+- `main.gd` constructs `AttritionCombatResolver` at boot and passes to `GameSimulation.initialize`.
+- Design Decisions Log updated in `rts-game-design.md` (7 new entries — see log).
+- Known bug filed for S7 throwaway: `_find_collided_army` field-name typo
+  (`edge_obj.is_reversed` should be `edge_obj.reversed`).
+
+**Concepts taught:**
+- **Strategy pattern**, formally named and applied. Distinguished from inheritance alone by
+  the load-bearing piece: **the consumer's structural blindness to which concrete subclass it
+  holds**. `if _combat_resolver is AttritionCombatResolver` would defeat the pattern entirely.
+- **The two-axis disambiguation in S6 setup.** User's Q2 sketch was a registry-based design
+  answering "Axis B: instantaneous vs sustained combat" (the deferred S3 question). Today's
+  job was "Axis A: swappable combat math." Reframing was a clean intervention — user re-sketched
+  the function-call shape correctly afterward.
+- **Three-layer combat architecture**: orchestrator (GameSimulation `_on_army_arrived_at_hop`)
+  / integrator (`_apply_combat_result`) / pure resolver (`CombatResolver`). Pure resolver is
+  data→data with no world knowledge. Integrator translates result into world-state mutations
+  and emits signals. Orchestrator decides when to call.
+- **Dependency Inversion as the unifying principle** behind EventBus/CommandBus/CombatResolver.
+  In all three the consumer depends on a *contract*, not a concrete producer. Each contract is
+  a stable boundary either side can evolve behind. The "D" in SOLID.
+- **Open/Closed Principle (S3 callback)** applied concretely: new combat math = new resolver
+  subclass; AttritionCombatResolver untouched. GameSim's call site never changes.
+- **Per-participant outcome granularity** for multi-party shape. `outcomes_by_army_id:
+  Dictionary` rather than a single per-combat outcome — generalizes to N-way combat without a
+  signature break.
+- **Forward-compat at interface boundaries, not implementations.** Interface forward-compat is
+  cheap (just type `armies: Array[Army]` instead of `attacker, defender`); behavior forward-compat
+  is YAGNI (don't write multi-party resolution math when nobody calls it that way). Invest in
+  interfaces; let implementations be exactly as ambitious as today's problem demands.
+- **Subsystem extraction criterion** (user-articulated unprompted in R3): "does this subsystem
+  have a stable, expressible interface?" `CombatResolver`'s yes. Collision detection's *probably*.
+  Army movement's no (the "interface" is just "advance progress" — not much to abstract).
+- **Crossing-detection vs same-edge-presence** for edge combat. Design doc said "on same edge →
+  collide"; user upgraded the spec to "collide when they meet" via canonical-position projection.
+  Better game-feel; spec-improvement origination.
+- **Canonical-position projection**: `_edge_key(edge)` returns lexicographic min->max form;
+  `_canonical_position(army)` returns `progress` if forward, else `1 - progress`. Two armies on
+  same edge are sortable on a shared `[0,1]` number line; head-on collision fires when
+  forward.canon >= backward.canon. Phase-1 simplification: uniform speed means same-direction
+  armies never close gap, so only opposite-direction pairs can cross.
+- **Cascade-skip pattern** for multi-collision safety: process collision events in collection
+  order; if a participant was destroyed in an earlier event, skip the later event. Same shape
+  as the filed multi-party-arrival sequential resolution (option a).
+- **Garrison retreat as MoveArmyCommand variant** — user-originated reframing: retreat is not
+  a special combat primitive but a Command issued mid-fight with "destination ≠ attacker's
+  source edge" constraint. Unifies retreat under the existing Command-pattern infrastructure
+  instead of bolting on special-case combat-layer logic. Filed as Phase 2/3 design intent.
+- **Signal granularity revisited**: `army_composition_changed` would be a value-update signal
+  (S3 anti-pattern). The right signal — when reactive consumers appear — is
+  `combat_resolved(ctx, result)`: an event with rich payload. Phase 1 has no reactive
+  consumer, so no signal added. Reinforced the S3 push-rich-payload rule.
+
+**Claude observations:**
+- **Pattern-selection origination edge progressed materially.** Going into S6 (per S5
+  carry-forward) the open question was: can the user *name* a pattern from the problem alone,
+  not just recognize it after introduction? Mixed-positive evidence:
+  - Q2 sketch was the registry-based design — solving Axis B (sustained combat) instead of
+    Axis A (swappable math). Showed independent design thinking but with axis confusion;
+    didn't name Strategy.
+  - After Axis A/B reframe, user re-sketched the function-call shape correctly: "one method,
+    give me two compositions, return winner + remaining." That's Strategy without needing
+    the name. Recognition without naming.
+  - When asked Q1 explicitly ("does this remind you of anything?"), user said no. Strategy
+    was named *by Claude*. Recognition gap remains.
+  - **However:** user *originated* the CombatContext shape genericization (no attacker/defender
+    perspective; `armies: Array[Army]` multi-party-shaped). Filed as real pattern-selection
+    origination. The interface they sketched is forward-compatible to option-b multi-party
+    without us having decided to build it.
+  - User *also originated* the garrison-retreat-as-MoveArmyCommand reframing — recognizing
+    retreat is a Command-layer concern, not a combat-layer primitive. Genuine design insight,
+    unifies retreat with existing architecture instead of bolting on.
+  - User *also originated* the subsystem-extraction criterion in R3 ("does this subsystem
+    have a stable, expressible interface?") — articulated unprompted. This is engineering
+    judgment, not pattern recall.
+  - Diagnostic for S7+: pattern *names* still lag pattern *application*. User can sketch
+    correct shapes and reason about tradeoffs but doesn't always know the textbook name.
+    Probably worth a low-key "have you encountered X before?" at each Concept opening
+    (worked well in S5 for State Machine, and revealed prior Strategy exposure today even
+    though the recall was incomplete).
+- **Multi-day session cadence continued** (S6 spanned 2026-06-25 → 2026-06-28, four calendar
+  days). Engagement stayed high throughout. Cognitive load did not break down. Per S5 carry-
+  forward this is fine and shouldn't be optimized away.
+- **The Category A vs Category B bug categorization** (Claude-introduced this session)
+  landed well as a teaching tool. User took syntax/typo bugs to throwaway sessions and
+  brought logical/design bugs back to the teaching session. Good calibration; worth reusing.
+- **"Take a swing then we'll review" rhythm** worked well throughout. User implements with
+  confidence, accepts critique, iterates cleanly. No need to scaffold more skeletal stubs
+  than was done; user does fine with `# TODO: implement` markers.
+- **R4 self-critique was sharp** ("I didn't know how to visualize it"). User is recognizing
+  where their architectural intuition runs out — exactly the meta-awareness needed to grow
+  past it. Worth a follow-up technique in S7+: when extraction or generalization is on the
+  table, ask "describe what the API would look like for a user of this thing" — forces the
+  abstraction to be concrete before commitment.
+- **One real lingering bug** (`edge_obj.is_reversed` vs `.reversed`) made it past review
+  because user said "I've implemented what i think is everything left" but multi-army
+  end-to-end test was not yet run. Note for S7: explicitly request "run dev key 4 with
+  multi-army setup" *before* claiming en-route combat done. The unverified-by-test gap was
+  the only soft spot in the implementation pass today.
+- **The user's "tenability of large files" worry** is now twice-flagged across S5 and S6.
+  CombatResolver extraction partially addresses it (and user articulated this themselves).
+  Collision detection is the next plausible extraction candidate. Watch for it in S7/S8 —
+  if `GameSimulation` keeps growing, propose extracting collision detection as
+  `EdgeCollisionDetector` with `find_collisions(armies) -> Array[CollisionEvent]` as the
+  shape the user already sketched mentally.
+
+**User's Self-Assessment (verbatim):**
+"I feel good, not fuzzy about the concepts covered today but i will just reiterate my nervousness about the tenability of large files and organization of logic. Ultimately our broad arch looks good though. It took a me a while to work through some of these bits of logic which is good practice for me, but taking time"
+
+---
+
 ## Carry-Forward Notes
 
 **User trajectory (long-running):**
-- **Pattern recognition → origination trajectory.** S5 evidence is mixed-positive: user
-  named patterns *after* introduction (state machine, valid-by-construction), but
-  *originated* specific architectural decisions unprompted (Option B path, WIN/RETREAT/DEFEAT
-  outcomes, no DISSOLVED enum, friendly-merging concern). Pattern *selection* origination
-  is the next edge. **Diagnostic for S6:** when CombatResolver is introduced, *present the
-  problem* (combat math will change; we'll add troop types, terrain, generals later) and ask
-  user to name the Strategy pattern + sketch the interface *before* it is introduced.
-- **Algorithmic scaffolding.** BFS in S2 took two iterations. State-machine branching in S5
-  was clean. For visibility BFS (S10) and AI scoring (Phase 4), still provide more skeletal
-  structure up-front than for state-machine-style work.
-- **Performance instinct calibration (3rd appearance).** S4: bulk-vs-granular signals. S5:
-  cost of `as Array[String]` casts. Same family, same response, same acceptance. Watch for
-  it in S6 around per-frame army-pair collision detection (genuinely O(N²) where the
-  instinct *would* be correct at scale — calibrate carefully).
-- **File-size / orchestrator-vs-implementer concern (S5).** User worries `GameSimulation`
-  will balloon. S6 CombatResolver extraction is the first concrete answer; flag the pattern
-  again ("this is what we previewed in S5 wrap") so it lands as a recurring move, not a
-  one-off.
+- **Pattern naming lags pattern application.** S6 reinforced the S5 read: user sketches
+  correct architectural shapes and reasons crisply about tradeoffs but doesn't always know
+  the textbook name when asked. Strategy pattern: when Claude asked "does this remind you
+  of anything?" user said no — but had already sketched the function-call-through-base-ref
+  shape correctly. **Diagnostic for S7+:** low-key disclosure question at each Concept
+  opening ("have you encountered X before?") — worked well for State Machine in S5 and
+  revealed partial Strategy exposure in S6. Costs nothing; calibrates depth.
+- **Pattern-selection origination edge** is genuinely progressing. S6 evidence: user
+  originated (a) the perspectiveless CombatContext / per-army outcomes shape that's
+  multi-party-compatible by signature, (b) the garrison-retreat-as-MoveArmyCommand reframe
+  unifying retreat under the Command pattern, (c) the subsystem-extraction criterion
+  unprompted in R3. The trend bends upward.
+- **Verification gap before claiming done.** S6 had one bug make it past review because user
+  said "implemented what i think is everything" without running the multi-army end-to-end
+  case. **Diagnostic for S7+:** explicitly request "run dev key 4 with the multi-army setup"
+  before accepting "done." Trust *with* verification.
+- **Subsystem extraction is now an active toolkit move**, not a deferred concern. User
+  *articulated the criterion themselves* in S6 R3 ("does this subsystem have a stable,
+  expressible interface?"). Apply this lens proactively in S7+: when `GameSimulation` grows
+  further, propose extracting collision detection as `EdgeCollisionDetector` with
+  `find_collisions(armies) -> Array[CollisionEvent]` as the signature the user already has
+  in their head.
 
-**Session 6 hooks (concrete to-dos for next session):**
-- Replace `print('fight')` in `_on_army_arrived_at_hop` with a real `CombatResolver.resolve()`
-  call. Result drives the actual state transition (Fighting → Moving / Retreating / dissolve).
-- Implement en-route collision detection: each `_process` tick, scan army pairs on shared
-  edges. Direction-agnostic per design doc. Enemy pairs → fight; friendly pairs → merge.
-  *Performance note:* this is O(N²) on armies — when user's perf instinct fires here, it'll be
-  fair. Discuss spatial indexing / bucket-by-edge as the natural answer if scale becomes real.
-- Implement friendly-army merging as the same lifecycle primitive as dissolution. Same-edge
-  friendly pair → smaller merges into larger. Arrival into friendly Fighting army → reinforces.
-- `CombatContext` (territory or edge metadata, attacker/defender refs) and `CombatResult`
-  data carriers. `CombatResult.outcome` is the WIN/RETREAT/DEFEAT enum agreed in S5
-  Decisions Log.
-- Introduce `AttritionCombatResolver` as the concrete subclass — simple 1:1 math, no troop
-  types yet.
-- "fight" console spam will resolve naturally once Fighting state transitions are wired —
-  army moves to FIGHTING, `_process` arrival branch no longer re-fires.
-- Strategy pattern: name it, scaffold `CombatResolver` base class with the contract
-  (`resolve(context: CombatContext) -> CombatResult`), then implement the concrete subclass.
-  **First real subsystem extraction** — connect explicitly to the file-size concern user
-  raised in S5 reflection.
-- Open question for S7 (not S6, but flag now so it's not lost): does a retreating army that
-  wins an interception resume retreating or resume original mission? Decided in S5 (resume
-  retreating, not mission) but implementation deferred.
+**Session 7 hooks (concrete to-dos for next session):**
+- **FIRST: throwaway fix of the `_find_collided_army` field-name bug** (game_simulation.gd
+  lines 261-262: `edge_obj.is_reversed` should be `edge_obj.reversed` to match the dict key
+  stored at line 70). Verify with multi-army head-on test (one human army from
+  `rivermouth_0_2`, one AI army from a position on the same edge in the opposite direction —
+  watch them meet mid-edge and resolve via `_resolve_edge_collision` → combat or merge as
+  appropriate).
+- **Then S7 main arc: Retreat + Conquest cooldown.** Per design doc:
+  - Phase 1 retreat: automatic `ArmyState` transition for the loser of a *head-on* edge
+    collision (legal only when met head-on; illegal when caught from behind — Phase 1's
+    uniform speed means same-direction overtake doesn't happen, so all edge collisions are
+    head-on and retreat eligibility is universal for now).
+  - Phase 1 retreat ≠ Phase 2/3 retreat. S6 reframe (filed in Open Questions): long-term,
+    retreat is a Command-layer concern (player issues `RetreatCommand` mid-fight, garrison
+    retreat is a constrained `MoveArmyCommand`). Phase 1's instant resolution doesn't have
+    a "during fight" moment, so it collapses to a state-machine transition. Implement
+    the Phase 1 form; flag the Phase 2/3 reframe in comments at the retreat call site so
+    we know where to come back.
+  - Conquest cooldown: when a territory is captured, set a cooldown timer (e.g. 10s). During
+    cooldown, production tick *skips* this territory. Stub-level: a `_cooldown_remaining`
+    field on the `Territory`-as-state-dict pattern, decremented each tick. The proper
+    `ConquestCooldownModifier` Resource (per design doc Phase 3 modifier-chain pattern)
+    lives in Phase 3.
+- **Watch the file-size lens.** If `GameSimulation` crosses ~400 lines or collision logic
+  grows significantly, propose collision detection extraction with the API the user already
+  has in their head (matches their R3 articulation).
+- **Phase 1 retreat raises a real design question deferred from S5:** does a retreating army
+  that wins an interception resume retreating or resume original mission? S5 decision said
+  "resume retreating, not mission." Verify this is still the call when implementing.
+
+**Open Question for Phase 2/3 (raised in S6):**
+- Garrison retreat as `MoveArmyCommand` variant. User-originated reframing: garrison can
+  decline defense by departing as a new army to an adjacent friendly territory. Mechanically
+  a constrained move ("destination ≠ attacker's source edge"). Defer until Phase 2/3 when
+  buildings/fortifications make "stand and die vs fall back" a more interesting choice.
 
 **Long-horizon flags:**
 - **Session cadence.** User confirmed multi-day session spans (S5 ran across three calendar
@@ -694,9 +905,24 @@
   engagements would give players time to react and commit reinforcements mid-fight —
   more interesting at the war/scale of this game. Architecturally cheap to swap later
   (Strategy pattern handles it: new `SustainedCombatResolver` subclass, no consumer
-  changes). **Decision:** keep instant resolution for Phase 1 to keep scope manageable;
-  revisit during or after Phase 2 (when Generals & Combat Depth lands and the combat
-  UI gets real attention).
+  changes — confirmed in S6 implementation). **Decision:** keep instant resolution for
+  Phase 1 to keep scope manageable; revisit during or after Phase 2 (when Generals &
+  Combat Depth lands and the combat UI gets real attention). Sustained combat is also
+  where the deferred *garrison retreat* and *command-driven army retreat* mechanics
+  become live — they all rest on the same "during fight" temporal model.
+- **Garrison retreat as `MoveArmyCommand` variant** (raised Session 6, user-originated).
+  Garrison can decline defense by departing as a new army to a friendly neighbor.
+  Mechanically a constrained move (destination ≠ attacker's source edge). Phase 1 has
+  garrisons fighting to destruction; defer the garrison-retreat option until Phase 2/3
+  when buildings/fortifications make "stand and die vs fall back" a more interesting
+  strategic decision.
+- **True multi-party combat resolver** (option b from S6 setup, deferred). Current Phase 1
+  resolves multiple opposing arrivals at one territory sequentially-pairwise (option a;
+  order-dependent acknowledged). The semantically preferred long-term form is a real N-way
+  resolver taking `Array[Side]` and resolving cross-side casualty math in one pass. Defer
+  until Phase 2 when generals/troop-types/modifiers force combat math to grow up anyway.
+  The current `CombatResolver` interface (`armies: Array[Army]`) is already shaped for this
+  expansion — only the implementation needs to change.
 
 ---
 

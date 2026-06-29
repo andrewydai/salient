@@ -18,6 +18,6 @@ func _unhandled_input(event: InputEvent) -> void:
 					GameSimulation.PLAYER_ID_HUMAN,       # issuer
 					"rivermouth_0_2",                     # from — player's starting territory
 					"sunken_road_1_2",                     # to — an adjacent neighbor
-					{GameSimulation.TROOP_TYPE_INFANTRY: 1},  # composition: 1 infantry
+					{GameSimulation.TROOP_TYPE_INFANTRY: 3},  # composition: 1 infantry
 				)
 				CommandBus.submit(cmd)
