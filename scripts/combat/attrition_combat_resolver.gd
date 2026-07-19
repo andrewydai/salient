@@ -36,12 +36,16 @@ func resolve_combat(context: CombatContext) -> CombatResult:
 			outcomes_by_army_id[army_2.id] = result.Outcome.DEFEAT
 			updated_army_compositions[army_1.id] = { GameSimulation.TROOP_TYPE_INFANTRY: army_1_army_count - army_2_army_count}
 			updated_army_compositions[army_2.id] = { GameSimulation.TROOP_TYPE_INFANTRY: 0 }
-		else:
+		elif army_1_army_count < army_2_army_count:
 			outcomes_by_army_id[army_1.id] = result.Outcome.DEFEAT
 			outcomes_by_army_id[army_2.id] = result.Outcome.WIN
 			updated_army_compositions[army_1.id] = { GameSimulation.TROOP_TYPE_INFANTRY: 0 }
 			updated_army_compositions[army_2.id] = { GameSimulation.TROOP_TYPE_INFANTRY: army_2_army_count - army_1_army_count }
-	
+		else:
+			outcomes_by_army_id[army_1.id] = result.Outcome.DEFEAT
+			outcomes_by_army_id[army_2.id] = result.Outcome.DEFEAT
+			updated_army_compositions[army_1.id] = { GameSimulation.TROOP_TYPE_INFANTRY: 0 }
+			updated_army_compositions[army_2.id] = { GameSimulation.TROOP_TYPE_INFANTRY: 0 }
 	result.outcomes_by_army_id = outcomes_by_army_id
 	result.updated_army_compositions = updated_army_compositions
 	

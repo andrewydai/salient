@@ -199,14 +199,26 @@ experience. After a combat resolves, `GameSimulation` checks:
 
 Collision between two enemy armies on the same edge is **direction-agnostic** — it fires
 regardless of whether the armies are traveling toward each other or in the same direction.
+Edge combat resolves via `CombatResolver`; the loser dies (no automatic retreat).
 
-After edge combat resolves, the losing army may attempt to **retreat**:
-- **Retreat is legal** if the army was met head-on (opposite directions). The army reverses
-  onto its source territory.
-- **Retreat is not legal** if the army was caught from behind (same-direction pursuit). It
-  has been overtaken and must fight to resolution.
-- Retreat is represented by `ArmyState.Retreating`; the army's `path` is reversed one hop
-  and it begins moving back toward its source territory.
+#### Retreat
+
+Retreat is a **player command**, not a combat outcome. The player issues `RetreatArmyCommand`
+against an in-flight army; on validation, the army transitions to `ArmyState.Retreating` and
+begins traversing its path in reverse. The retreat terminates by dissolving into the
+**nearest friendly territory** encountered on the reverse path — this may be a territory the
+army just captured on its outbound leg, or the original source.
+
+Legality:
+- Legal while the army is `MOVING` (in transit).
+- Illegal if the army is already `RETREATING`.
+- (Phase 2+ only) Illegal if the army has been "caught from behind" — same-direction overtaken.
+  Impossible in Phase 1 with uniform army speed.
+
+Mechanically, retreat flips `current_edge` and inverts `progress` at command time, so the
+army immediately begins moving back along the edge it was on. If a retreating army arrives at
+an enemy territory on its reverse path, standard arrival combat runs — winning captures the
+territory (now friendly, so the army dissolves there); losing destroys the army.
 
 ---
 
@@ -362,19 +374,21 @@ The game is single-player-vs-AI locally. Local human-vs-human is not supported; 
 is online-only (Phase 6).
 
 **Build tasks:**
-- [ ] Project setup: folder structure, autoloads registered, base scenes
-- [ ] `TerritoryData` and `MapData` resources defined; hand-craft test map (15 territories)
-- [ ] Territory rendering: `Polygon2D` (visual) + `CollisionPolygon2D` + click detection
-- [ ] `TerritoryGraph`: adjacency list, BFS pathfinding between any two territories
-- [ ] `GameSimulation` autoload: territory ownership, garrison counts, production tick
-- [ ] `CommandBus` and `EventBus` autoloads wired up
-- [ ] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
-- [ ] Army movement along path edges in real time
-- [ ] Attrition `CombatResolver`: armies arriving at enemy territory fight 1:1
-- [ ] En-route combat: two enemy armies on the same edge collide and fight (direction-agnostic)
-- [ ] Retreat mechanic: losing army reverses one hop if met head-on; cannot retreat if caught from behind
-- [ ] Army dissolves into garrison on arrival at friendly territory
-- [ ] Conquest cooldown: captured territories don't produce immediately
+- [x] Project setup: folder structure, autoloads registered, base scenes
+- [x] `TerritoryData` and `MapData` resources defined; hand-craft test map (15 territories)
+- [x] Territory rendering: `Polygon2D` (visual) + `CollisionPolygon2D` + click detection
+- [x] `TerritoryGraph`: adjacency list, BFS pathfinding between any two territories
+- [x] `GameSimulation` autoload: territory ownership, garrison counts, production tick
+- [x] `CommandBus` and `EventBus` autoloads wired up
+- [x] `MoveArmyCommand`: validate legality, create `Army`, begin hop-by-hop pathing
+- [x] Army movement along path edges in real time
+- [x] `ArmyRenderer` + `ArmyNode`: discrete lifecycle signals, live per-frame progress read
+- [x] Attrition `CombatResolver`: armies arriving at enemy territory fight 1:1
+- [x] En-route combat: two enemy armies on the same edge collide and fight (direction-agnostic)
+- [x] Mid-path capture continues: army survives + advances after winning a non-terminal territory fight
+- [x] `RetreatArmyCommand`: player-issued command reverses in-flight army; dissolves at nearest friendly territory on reverse path
+- [x] Army dissolves into garrison on arrival at friendly territory
+- [x] Conquest cooldown: captured territories don't produce immediately (Phase-1 stub for Phase-3 `ConquestCooldownModifier`)
 - [ ] `InputController`: click territory to select, click destination to issue move order
 - [ ] Partial army selection: three modes — all troops, proportional slice of whole army, specific count of one troop type
 - [ ] Minimal placeholder AI: issues random valid `MoveArmyCommand`s each tick (replaced in Phase 4)
@@ -552,7 +566,7 @@ is online-only (Phase 6).
 | Multiplayer fog | Server filters state per client through `VisibilitySystem` | Clients must not receive HIDDEN data — this is a security requirement, not just a UI concern |
 | General assignment | Auto-assign all territory generals on departure | Manual assignment is more strategic but adds UI complexity for unclear gain |
 | En-route collision | Direction-agnostic | Two enemy armies on the same edge always collide, regardless of travel direction |
-| Retreat mechanic | Legal only if met head-on; illegal if caught from behind | Caught-from-behind armies cannot disengage — adds pursuit/interception depth |
+| Retreat mechanic | Player-issued `RetreatArmyCommand` from Phase 1; not a combat outcome. Head-on/from-behind rule is a Command-legality precondition, not a resolver output. In Phase 1 with uniform speed, "caught from behind" is impossible, so retreat is legal whenever the army is `MOVING`. See "Retreat framing (S7 reframe)" below | Framing A (design doc as originally written) treated retreat as a combat side-effect the sim emitted, which cut the player out of their own decision. Framing B unifies retreat with the S4 Command pattern — every player action is a Command. Superseded on S7 |
 | Terrain movement speed | Bottleneck model: `min(source.speed_modifier, dest.speed_modifier)` | The harder terrain dominates; simpler to reason about than an average |
 | Partial army selection | Three modes: all / proportional slice / specific troop type count | Covers all common intent without a complex UI |
 | Army redirect mid-edge | Immediately reverses to source territory | Clean and predictable; no "finish current hop first" ambiguity |
@@ -578,5 +592,12 @@ is online-only (Phase 6).
 | Multi-party combat resolution (Phase 1) | Sequential pairwise: when 3+ opposing forces arrive at one territory in the same tick, resolve pairwise in arrival order. Order-dependence acknowledged | Simple, deterministic given a fixed order, matches the cascade-skip pattern used for multi-collision edges. True N-way resolver (option b) is the semantically preferred long-term shape and is deferred to Phase 2/3 when troop types and modifiers force combat math to grow up anyway |
 | Friendly mid-edge merge | Smaller army dissolves into larger; larger keeps its own destination/path. Smaller's destination is discarded | Game-feel: "reinforcing an existing army on the move." Same lifecycle primitive as territory dissolution. Alternatives considered: pick by oldest army id (less obvious to player); don't merge at all (defensible but loses the design intent of friendly cohesion) |
 | Edge-collision detection model | Crossing-detection via canonical-position projection on `[0,1]`, not "same-edge presence" | Crossing-detection gives correct game-feel — two armies marching across an edge meet in the middle, not on departure. "Same edge → collide" is the literal reading of the design spec; this is a spec upgrade (user-originated S6). Phase 1's uniform speed means only opposite-direction pairs can cross; same-direction overtake becomes possible in Phase 2 with variable terrain speed |
-| Retreat as Command-layer concern (long-term) | Phase 2/3 reframes retreat as a `RetreatCommand` (army) or constrained `MoveArmyCommand` (garrison declining defense), not a special combat primitive. Phase 1 implements retreat as an automatic `ArmyState` transition for the head-on loser, because instant combat has no "during fight" moment for a command to be issued | User-originated S6 insight. Unifies retreat under the existing Command pattern instead of bolting on special-case logic in the combat layer. Phase 1 form is a stepping stone; Phase 2/3 reintroduces command-driven retreat alongside sustained combat |
+| Retreat framing (S7 reframe) — Framing B | Retreat is a **player command** (`RetreatArmyCommand`) from Phase 1, not a combat outcome. Automatic "loser retreats" behavior is dropped. An edge-combat loser who didn't preemptively retreat just dies. `AttritionCombatResolver` emits only WIN/DEFEAT; `Outcome.RETREAT` stays in the enum as forward-compat but is unemitted in Phase 1–2. Sustained combat in Phase 2/3 gives mid-fight retreat a real "during fight" moment | Supersedes the S6 "Retreat as Command-layer concern (long-term)" note, which had Framing A for Phase 1 as a scope compromise. S7 removed the compromise. Half the retreat implementation vanished: no RETREAT emission branch in resolver, no "resume retreating vs. resume mission" combat rule, no `is_reversed` field. User-originated |
+| Retreat termination — "nearest ally" | Retreating army traverses path in reverse, dissolves at the *first friendly territory it arrives at* on the reverse path — not one hop back, not all the way to origin. If it hits an enemy territory on the reverse path, standard arrival combat runs; winning captures + dissolves (territory is now friendly), losing destroys | Best game-feel of the three options: broken army bounces to nearest safe harbor. Simpler than "all the way back" (never advances in reverse, so `_advance_army_to_next_hop` stays direction-agnostic). More useful than "one hop back" (multi-hop retreats work naturally). User-originated S7 |
+| Mid-path capture continues | Army arriving at an *enemy* territory mid-path fights; on WIN, captures the territory and continues to the next hop instead of dissolving. On final-hop capture, dissolves as before. Dissolve-vs-advance decision lives in the orchestrator (`_on_army_arrived_at_hop`), not the integrator (`_apply_combat_result`) | Original design had the integrator dissolving on any territory-WIN, which conflated "combat resolved" with "army terminates." Under mid-path capture, the decision depends on path context (final hop? retreating?), which is the orchestrator's authority. The refactor collapsed friendly-arrival and just-captured-arrival into one branch: `if final_hop or retreating: dissolve else: advance`. Same-branch symmetry is the diagnostic signal the layering is right. User-originated S7 |
+| `_apply_combat_result` scope | Integrator applies world-state mutations from a `CombatResult` (composition, ownership, garrison, cooldown) and emits corresponding signals. It does NOT dissolve armies on WIN — that decision is the orchestrator's. It DOES dissolve armies on DEFEAT, since defeat is unambiguous termination regardless of path context | Refines S6's three-layer split. Integrator's job is "translate result to world state"; termination decisions that depend on path context escalate to the orchestrator. DEFEAT stays in the integrator because it has no context dependency |
+| Army direction encoding | `Army.state == RETREATING` is the sole source of truth for direction. No separate `is_reversed` boolean. `_apply_retreat_army` flips `current_edge` and inverts `progress` in place; everything downstream (renderer, `_process`, arrival handler) stays direction-agnostic and reads `state` when direction matters | S7 initially added `is_reversed` per the S5 "direction flag deferred to S7" note, then dropped it after realizing state carries the same information. Two fields storing the same fact is one field too many. If Phase 2/3 sustained combat forces a decoupling (army in FIGHTING state mid-retreat needs to remember direction independently), add the field back then |
+| Conquest cooldown — Phase 1 stub | On territory capture, `territory_conquest_cooldown[territory_id] = CONQUEST_COOLDOWN` (10s). Decremented each frame in `_process`; erased when ≤ 0. `_on_production_tick` skips territories present in the cooldown dict | Simplest thing that produces the right behavior. Phase 3 extracts this into `ConquestCooldownModifier` (a `TerritoryModifier` subclass) and deletes the inline check. Deliberately not building the modifier hierarchy from one concrete example — wait for Phase 3's `Fortification`/`Barracks`/`Watchtower` to pull the base-class contract into shape |
+| Conquest cooldown state representation | Presence in `territory_conquest_cooldown` dict *is* the flag: entry present = on cooldown; absent = idle. No `0.0` sentinel for "no cooldown" | Two representations of "not on cooldown" (`0.0` and "key not present") would let stale zeros leak in and require `initialize()` to seed every territory. Presence-only representation collapses to one form. User-originated S7 |
+| `ArmyRenderer` payload contract | Renderer holds live `Army` reference from `army_spawned` signal payload; reads `army.current_edge` + `army.progress` directly each frame in `_process`. Subscribes to `army_spawned` and `army_dissolved` only — not `army_advanced_hop`, which is redundant for position rendering (sim mutates `current_edge` in place; renderer sees it via shared reference) | Realizes S3's discrete-signals + continuous-local-read pattern in code for the first time. Phase-1-only: Phase 6 forces the wire and this direct read gives way to dead-reckoning + snapshot correction. `army_advanced_hop` stays in the EventBus for future consumers (audio, AI awareness) |
 | Interface forward-compat vs implementation forward-compat | Invest in *interface boundaries* up front (cheap; touches all callers if changed later); let *implementations* be exactly as ambitious as today's problem demands (YAGNI for behavior; expensive to write speculative math) | S6 principle. The `armies: Array[Army]` signature on `CombatContext` is forward-compat-at-interface (cost zero today); the actual multi-party math is forward-compat-at-implementation (not written; would be speculative). Same principle behind why `Outcome.RETREAT` is in the enum from day 1 but `AttritionCombatResolver` never emits it |

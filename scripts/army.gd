@@ -6,7 +6,7 @@ enum State { MOVING, FIGHTING, RETREATING }
 # Structural legality only. Lists what the machine *permits*;
 # GameSimulation decides which permitted transition to actually take.
 const LEGAL_TRANSITIONS: Dictionary = {
-	State.MOVING:     [State.FIGHTING],
+	State.MOVING:     [State.FIGHTING, State.RETREATING],
 	State.FIGHTING:   [State.MOVING, State.RETREATING],
 	State.RETREATING: [State.FIGHTING],
 }

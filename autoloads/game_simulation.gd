@@ -1,6 +1,7 @@
 extends Node
 
 # constants
+const CONQUEST_COOLDOWN: float = 10.0
 const PRODUCTION_TICK_INTERVAL: float = 5.0
 const PLAYER_ID_HUMAN: String = "player_1"
 const PLAYER_ID_AI: String = "player_2"
@@ -19,6 +20,7 @@ var territory_garrison: Dictionary = {}  # territory_id -> Dictionary[troop_type
 var armies: Dictionary = {}    # army_id -> Army
 var _next_army_id: int = 0
 var _territory_graph: TerritoryGraph    # built in initialize()
+var territory_conquest_cooldown: Dictionary = {} # territory_id -> float
 
 # Production tick driver.
 var _production_timer: Timer
@@ -47,6 +49,17 @@ func initialize(map_data: MapData, combat_resolver: CombatResolver) -> void:
 
 # --- Simulation logic (actively running processes) ---
 func _process(delta: float) -> void:
+	var finished_territory_cooldowns = []
+	for cooldown_ter_id in territory_conquest_cooldown.keys():
+		var cur_cooldown = territory_conquest_cooldown[cooldown_ter_id]
+		cur_cooldown -= delta
+		if cur_cooldown <= 0:
+			finished_territory_cooldowns.append(cooldown_ter_id)
+		else:
+			territory_conquest_cooldown[cooldown_ter_id] = cur_cooldown
+	for ter_id in finished_territory_cooldowns:
+		territory_conquest_cooldown.erase(ter_id)
+	
 	var arrived_armies: Array[Army] = []
 	for army in armies.values():
 		army.progress += delta * ARMY_MOVE_SPEED
@@ -68,6 +81,7 @@ func _process(delta: float) -> void:
 		if collided_army != null:
 			collision_events.append({ 'army_1': army, 'army_2': collided_army })
 		edge_list.append({ 'army': army, 'pos': canon_pos, 'is_reversed': is_reversed })
+		edge_group_dict[edge_key] = edge_list # even though we're mutating initially the value is null
 		
 	# process collisions
 	for col_event in collision_events:
@@ -108,14 +122,18 @@ func _on_army_arrived_at_hop(army: Army) -> void:
 		ctx.territory_fight = territory_fight
 		var result = _combat_resolver.resolve_combat(ctx)
 		_apply_combat_result(ctx, result)
+		# if after combat the armies gone we're done
+		if armies.get(army.id, null) == null:
+			return
+	# if the army didn't have to fight or it's still around, determine whether
+	# it's where it needs to be, was retreating, or should continue
+	if cur_ter_id == dest_ter_id or army.state == Army.State.RETREATING:
+		_dissolve_army_into_garrison(army)
 	else:
-		if cur_ter_id == dest_ter_id:
-			_dissolve_army_into_garrison(army)
-		else:
-			_advance_army_to_next_hop(army)
+		_advance_army_to_next_hop(army)
 
 func _dissolve_army_into_garrison(army: Army) -> void:
-	var dest_territory_id: String = army.path[-1]
+	var dest_territory_id: String = army.current_edge[1] # dissolves at the current arrival territory
 	var next_garrison = get_garrison(dest_territory_id).duplicate()
 	for troop_type in army.composition.keys():
 		next_garrison[troop_type] += army.composition[troop_type]
@@ -124,7 +142,7 @@ func _dissolve_army_into_garrison(army: Army) -> void:
 	EventBus.army_dissolved.emit(army.id)
 	armies.erase(army.id)
 
-func _advance_army_to_next_hop(army: Army) -> void:
+func _advance_army_to_next_hop(army: Army) -> void:	
 	army.progress = 0.0
 	var army_cur_ter_path_idx = army.path.find(army.current_edge[1])
 	army.current_edge = [army.path[army_cur_ter_path_idx], army.path[army_cur_ter_path_idx + 1]] as Array[String]
@@ -133,6 +151,8 @@ func _advance_army_to_next_hop(army: Army) -> void:
 func _on_production_tick() -> void:
 	# For each territory, increment garrison by base_production (default infantry).
 	for territory_id in territory_garrison.keys():
+		if territory_conquest_cooldown.has(territory_id):
+			continue
 		var next_garrison = get_garrison(territory_id).duplicate()
 		var base_production = territories[territory_id].base_production
 		next_garrison[TROOP_TYPE_INFANTRY] += base_production
@@ -144,6 +164,8 @@ func _on_production_tick() -> void:
 func apply(command: Command) -> void:
 	if command is MoveArmyCommand:
 		_apply_move_army(command)
+	elif command is RetreatArmyCommand:
+		_apply_retreat_army(command)
 
 # --- Read-only queries ---
 
@@ -183,6 +205,20 @@ func is_move_legal(command: MoveArmyCommand) -> bool:
 		
 	return true
 
+func is_retreat_legal(command: RetreatArmyCommand) -> bool:
+	var army: Army = armies.get(command.army_id, null)
+	if army == null:
+		push_warning("army_id %s not in armies dictionary" % [command.army_id])
+		return false
+	if army.owner_id != command.issuer_player_id:
+		push_warning("command issuer_id %s does not match army owner_id %s" % [command.issuer_player_id, army.owner_id])
+		return false
+	if !army.can_transition_to(Army.State.RETREATING):
+		push_warning("army.state %s not transitionable to retreating" % [army.state])
+		return false
+	
+	return true
+
 # --- Mutations (private by convention) ---
 
 func _apply_move_army(command: MoveArmyCommand) -> void:
@@ -220,9 +256,7 @@ func _apply_combat_result(combat_context: CombatResolver.CombatContext, combat_r
 				push_warning("2 combat winners detected %s %s" % [winning_army_id, army_id])
 			else:
 				winning_army_id = army_id
-		elif army_result == CombatResolver.CombatResult.Outcome.RETREAT:
-			print("RETREAT UNIMPLEMENTED")
-			
+
 	# resolve the winner's effects and the territory if it's there
 	if combat_context.territory_fight == null:
 		if winning_army_id == null:
@@ -237,16 +271,20 @@ func _apply_combat_result(combat_context: CombatResolver.CombatContext, combat_r
 			territory_garrison[territory_id] = combat_result.updated_territory_garrison.duplicate()
 			EventBus.garrison_changed.emit(territory_id, territory_garrison[territory_id])
 		else:
-			var updated_troops = combat_result.updated_army_compositions[winning_army_id]
 			var territory_id = combat_context.territory_fight.territory_id
 			var winning_army: Army = armies[winning_army_id]
-			territory_garrison[territory_id] = updated_troops
 			territory_owner[territory_id] = winning_army.owner_id
-			EventBus.army_dissolved.emit(winning_army_id)
-			armies.erase(winning_army_id)
+			territory_garrison[territory_id] = combat_result.updated_territory_garrison.duplicate()
 			EventBus.territory_owner_changed.emit(territory_id, winning_army.owner_id)
-			EventBus.garrison_changed.emit(territory_id, updated_troops)
+			territory_conquest_cooldown[territory_id] = CONQUEST_COOLDOWN
+			EventBus.garrison_changed.emit(territory_id, territory_garrison[territory_id])
+			winning_army.composition = combat_result.updated_army_compositions[winning_army.id].duplicate()
 			
+func _apply_retreat_army(command: RetreatArmyCommand) -> void:
+	var army: Army = armies[command.army_id]
+	army.current_edge = [army.current_edge[1], army.current_edge[0]] as Array[String]
+	army.progress = 1.0 - army.progress
+	army.state = Army.State.RETREATING
 	
 # --- Helpers ---
 func _total_troops(army: Army) -> int:

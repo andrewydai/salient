@@ -1,14 +1,15 @@
 [gd_scene format=3 uid="uid://b7bg2opwpf8ec"]
 
-[ext_resource type="Script" uid="uid://1k5pesdqou5x" path="res://scripts/map_renderer.gd" id="1_0wfyh"]
 [ext_resource type="Script" uid="uid://d2xmyqtl83vay" path="res://scripts/main.gd" id="1_jyhfs"]
+[ext_resource type="Script" uid="uid://1k5pesdqou5x" path="res://scripts/renderers/map_renderer.gd" id="2_sugp2"]
 [ext_resource type="Script" uid="uid://birrhhug3w7r0" path="res://scripts/dev_keys.gd" id="3_sugp2"]
+[ext_resource type="Script" uid="uid://b8ge2wq1y0rdl" path="res://scripts/renderers/army_renderer.gd" id="4_jyhfs"]
 
 [node name="Main" type="Node2D" unique_id=600595507]
 script = ExtResource("1_jyhfs")
 
 [node name="MapRenderer" type="Node2D" parent="." unique_id=903897784]
-script = ExtResource("1_0wfyh")
+script = ExtResource("2_sugp2")
 
 [node name="DevKeys" type="Node" parent="." unique_id=1834128243]
 script = ExtResource("3_sugp2")
@@ -16,3 +17,6 @@ script = ExtResource("3_sugp2")
 [node name="Camera2D" type="Camera2D" parent="." unique_id=6382212]
 offset = Vector2(640, 400)
 zoom = Vector2(1.2, 1.2)
+
+[node name="ArmyRenderer" type="Node2D" parent="." unique_id=705954963]
+script = ExtResource("4_jyhfs")

@@ -9,20 +9,16 @@
 ## Current State
 
 - **Phase:** 1 — Core Game Loop
-- **Session Number:** 6 (complete)
-- **Current Task:** Ready to begin Session 7
-- **Next Session Goal:** Retreat & Conquest Cooldown. **Open with throwaway fix** of the
-  `_find_collided_army` field-name typo (`edge_obj.is_reversed` → `edge_obj.reversed`,
-  lines 261-262), verified with a head-on multi-army test (one human army + one AI army on
-  opposite ends of the same edge — they should meet mid-edge and collide/merge cleanly).
-  Then main arc: implement retreat as an `ArmyState` transition for the loser of a head-on
-  edge collision (Phase 1 form — automatic, no Command involvement). Note S6 reframe: the
-  *long-term* design has retreat as a Command-layer concern (player issues `RetreatCommand`
-  mid-fight); Phase 1's instant resolution doesn't have a "during fight" moment so retreat
-  collapses to a state-machine transition. Phase 2/3 reintroduces command-driven retreat when
-  sustained combat lands. Also: conquest cooldown for captured territories — set timer on
-  capture, suppress production during cooldown. Stub semantics here; the proper
-  `ConquestCooldownModifier` Resource lives in Phase 3.
+- **Session Number:** 7 (complete)
+- **Current Task:** Ready to begin Session 8
+- **Next Session Goal:** InputController + partial army selection. Replace dev keys 4/5/6/7
+  with actual mouse input. Click a territory → select. Click destination → issue
+  `MoveArmyCommand`. Click an in-transit army → select. Second click → issue
+  `RetreatArmyCommand` (until Redirect lands in S9). Partial army selection UI: three modes
+  — all troops / proportional slice / specific count of one troop type. `InputController`
+  is the same pipeline the placeholder AI will use in S12 (both issue commands via
+  `CommandBus`), so this is the last piece before the game loop is playable without dev
+  keys. `dev_keys.gd` stays around as a debug tool but is no longer the primary command source.
 
 ---
 
@@ -111,8 +107,9 @@
       contextual layering).
     - Path representation: **immutable, source preserved** (Option B from S5 discussion).
       `army.path = [from, hop1, ..., dest]` for the whole army lifetime. Position is tracked via
-      `current_edge`; the helpers use `path.find(current_edge[1])` to advance. Direction flag
-      deferred to S7 when retreat is implemented.
+      `current_edge`. Retreat is expressed by flipping `current_edge` and inverting `progress`
+      at command time — no direction flag needed (S7: originally added `is_reversed`, then dropped
+      after realizing `state == RETREATING` carries the same information).
   - **GameSimulation (expanded in S5):**
     - Now owns: `armies: Dictionary`, `_next_army_id: int`, `_territory_graph: TerritoryGraph`.
       `ARMY_MOVE_SPEED: float = 0.5` constant (≈ 2 s/edge).
@@ -179,14 +176,97 @@
       projects progress onto [0,1] forward direction; `_total_troops(army)` sums composition;
       `_find_collided_army(edge_list, cur_pos, is_reversed)` returns first opposite-direction
       neighbor whose canonical position has crossed the current army's.
-    - **Known bug (filed for S7 throwaway open):** `_find_collided_army` lines 261-262 use
-      `edge_obj.is_reversed` but the dict key stored at line 70 is `'reversed'`. Field access on
-      missing key silently returns `null` → branch 1's third clause always passes (false
-      positives for same-direction backwards, masked in Phase 1 by uniform-speed gap stability);
-      branch 2's third clause always fails (false negatives — forward armies never detect
-      backward existing entries). Rename and verify with multi-army head-on test.
+    - S6 filed a field-name bug in `_find_collided_army` for S7 to fix. On S7 review, the
+      dict key and read site both use `is_reversed` — no bug present. Verified end-to-end via
+      dev key 5 (multi-army head-on, both armies now render): armies meet mid-edge and combat
+      resolves cleanly.
   - `res://scripts/main.gd` — now constructs `AttritionCombatResolver` and passes it to
     `GameSimulation.initialize(map, resolver)`.
+  - **ArmyRenderer + ArmyNode (new in S7):**
+    - `res://scripts/renderers/army_renderer.gd` — `class_name ArmyRenderer extends Node2D`.
+      Subscribes to `army_spawned` + `army_dissolved` in `_ready`. Precomputes territory
+      centroids in `initialize(map_data)` (`_territory_centers: Dictionary`). Holds
+      `_tracked_armies: Dictionary[army_id → TrackedArmy]` (inner class bundling live Army
+      reference + ArmyNode visual). `_process` reads each tracked army's live `current_edge`
+      + `progress` and lerps to compute position; calls `set_facing` and `position` on the
+      ArmyNode each frame. `army_advanced_hop` deliberately NOT subscribed — position rendering
+      is direction-agnostic and reads the live mutated `current_edge` on the next frame
+      automatically. S3's discrete-vs-continuous split realized in code for the first time.
+    - `res://scripts/renderers/army_node.gd` — `class_name ArmyNode extends Node2D`. Owns
+      `@onready var _sprite: Sprite2D = $Sprite2D` (loaded via scene, not `.new()`). Small
+      intentional API: `set_owner_color(color)` (uses Sprite2D's `modulate` — white body +
+      black outline design tints the interior only) and `set_facing(from, to)` (rotation from
+      angle). Wired via `preload("res://scenes/ArmyNode.tscn").instantiate() as ArmyNode`.
+    - `res://scenes/ArmyNode.tscn` — Node2D root + Sprite2D child with texture assigned in
+      editor. Arrow asset drawn pointing right (0 rad = +X), interior white, black outline.
+    - Gotcha resolved: `@onready` variables don't populate until the node enters the scene
+      tree via `add_child`. `_handle_army_spawned` calls `add_child(army_node)` BEFORE any
+      method that touches `_sprite`, so `set_owner_color`/`set_facing` are only invoked
+      post-tree-entry. Same rule caused a null crash mid-implementation before we reordered.
+  - **Retreat (new in S7 — Framing B):**
+    - `res://scripts/commands/retreat_army_command.gd` — `class_name RetreatArmyCommand
+      extends Command`. Fields: `army_id: String`. Player-issued command; on validation the
+      army transitions to `RETREATING` state and reverses direction.
+    - `CommandBus.submit` dispatches: `MoveArmyCommand → is_move_legal + apply` and
+      `RetreatArmyCommand → is_retreat_legal + apply`. Refactored branch: computes `is_legal`
+      into a flag, then routes; cleaner than the S4 early-return style.
+    - `GameSimulation.is_retreat_legal(command)` — validates army exists, owner matches
+      issuer, `army.can_transition_to(RETREATING)`. Structural gate via the S5
+      `can_transition_to` helper.
+    - `GameSimulation._apply_retreat_army(command)` — three-line mutation: flip
+      `current_edge = [current_edge[1], current_edge[0]]` (typed-array cast applied), invert
+      `progress = 1.0 - progress`, set `state = RETREATING`. Everything downstream reads
+      state or `current_edge` and behaves correctly without direction-awareness.
+    - `Army.is_reversed` was added, then dropped — state carries direction, one representation
+      of the fact is enough. `is_reversed` local variable inside `_find_collided_army` /
+      `_process` collision-detection loop is a DIFFERENT concept (edge alphabetical
+      orientation) and stays.
+    - Retreat termination via "nearest ally" rule: retreating army arrives at first
+      reverse-direction hop. If friendly → dissolve into that garrison. If enemy/neutral →
+      combat runs; winning captures + dissolves (territory is now friendly); losing destroys.
+      `_advance_army_to_next_hop` is unmodified — retreat never walks the path backward past
+      the first reverse hop.
+  - **Combat integrator refactor (S7):**
+    - `_apply_combat_result` territory-WIN branch no longer dissolves the winning army or
+      emits `army_dissolved`. It updates the winning army's composition, updates territory
+      owner + garrison (via `combat_result.updated_territory_garrison`, not a hand-rolled
+      dict), sets `territory_conquest_cooldown[territory_id] = CONQUEST_COOLDOWN`, emits
+      `territory_owner_changed` + `garrison_changed`. The dissolve-vs-advance decision moved
+      out of the integrator and into `_on_army_arrived_at_hop` (the orchestrator).
+    - `_on_army_arrived_at_hop` now: (1) if hostile, resolve combat, apply result, return if
+      army was defeated; (2) either way, decide dissolve-vs-advance via
+      `if cur_ter_id == dest_ter_id or army.state == RETREATING: dissolve else: advance`.
+      One branch handles friendly-arrival and just-captured-arrival identically — the
+      dissolve/advance decision depends on *army context* (final hop? retreating?), not on
+      *how* the territory came to be friendly.
+    - `_dissolve_army_into_garrison` now uses `army.current_edge[1]` (arrival territory), not
+      `army.path[-1]` (final destination). Under mid-path capture semantics, these can
+      diverge — the arrival territory is what's actually correct.
+  - **Conquest cooldown (new in S7):**
+    - `CONQUEST_COOLDOWN: float = 10.0` constant on GameSimulation.
+    - `territory_conquest_cooldown: Dictionary[territory_id → float]` — presence in dict IS
+      the flag: entry present = on cooldown, absent = idle. No sentinel `0.0` values.
+    - Set at territory-WIN in `_apply_combat_result`. Decremented each frame in `_process`;
+      entries with `remaining ≤ 0` are erased after the decrement loop (collect-then-process
+      to avoid modifying-during-iteration).
+    - `_on_production_tick` checks `territory_conquest_cooldown.get(id, null) != null` to
+      skip production for cooldown-active territories. `.has(id)` is equivalent and slightly
+      more idiomatic; either reads fine.
+    - Phase 1 stub; Phase 3 extracts into `ConquestCooldownModifier` (a `TerritoryModifier`
+      subclass) and deletes the inline check.
+  - **EventBus signals (unchanged in S7):** still six signals from S6. No new signals added
+    for retreat, mid-path capture, or cooldown — no reactive consumer in Phase 1. When UI
+    lands, add `combat_resolved(ctx, result)` and `territory_cooldown_changed(id, remaining)`
+    at coarse cadence per S3 push-rich-payload rule.
+  - **dev_keys.gd (expanded in S7):** keys 1-4 unchanged. Key 5 (multi-army head-on) seeds AI
+    ownership + garrison on `sunken_road_1_2` and issues two opposing `MoveArmyCommand`s to
+    exercise en-route collision. Key 6 issues a `RetreatArmyCommand` on the first in-flight
+    human army that isn't already retreating. Key 7 issues a multi-hop `MoveArmyCommand`
+    (`rivermouth_0_2 → breadlands_2_2`, path passes through neutral `sunken_road_1_2`) to
+    exercise mid-path capture continuation.
+  - **main.tscn (S7):** now has ArmyRenderer child (Node2D, script attached), sibling of
+    MapRenderer. `main.gd._ready` initializes `map_renderer` first, then `army_renderer`,
+    then `GameSimulation` — "consumer subscribes before producer emits" applied uniformly.
 
 ---
 
@@ -225,15 +305,30 @@
       attacker conquers when stronger, repelled when weaker, ownership/garrison signals fire.)
 - [x] En-route combat: direction-agnostic collision
       (Crossing-detection via canonical-position projection; collect-then-process with
-      cascade-skip. **Field-name typo bug pending S7 throwaway fix** before multi-army
-      head-on test verifies it.)
-- [ ] Retreat mechanic: head-on = can retreat; caught from behind = cannot (Session 7 main arc)
+      cascade-skip. Verified via dev key 5 on S7 after ArmyRenderer landed.)
+- [x] Retreat mechanic: `RetreatArmyCommand` — Framing B (S7)
+      (Player-issued command from Phase 1. Legal when army is `MOVING`. Dissolves at nearest
+      friendly territory on reverse path. `is_reversed` field considered then dropped —
+      `state == RETREATING` carries the direction. Framing A's "loser of head-on edge fight
+      retreats automatically" is dropped; edge combat losers just die.)
+- [x] Mid-path capture continues (S7)
+      (Army winning a non-terminal territory fight survives, updates its composition, advances
+      to the next hop. Dissolve-vs-advance decision lives in the orchestrator, not the
+      integrator. `_dissolve_army_into_garrison` uses `current_edge[1]`, not `path[-1]`.)
 - [x] Army dissolves into garrison on arrival at friendly territory
       (`_dissolve_army_into_garrison` adds composition, emits signals, removes from dict.)
-- [ ] Conquest cooldown: captured territories don't produce immediately (Session 7 alongside retreat)
+- [x] Conquest cooldown: captured territories don't produce immediately (S7)
+      (Presence-in-dict as flag; entry present = on cooldown, absent = idle. 10s duration.
+      Decremented in `_process`, checked in `_on_production_tick`. Phase 1 stub for Phase 3
+      `ConquestCooldownModifier`.)
 - [x] Friendly army merging on shared edge or into ongoing combat
       (S6: smaller dissolves into larger, larger keeps destination — user-chosen convention.
       `_merge_armies` is the shared lifecycle primitive with `_dissolve_army_into_garrison`.)
+- [x] ArmyRenderer + ArmyNode (S7, added mid-arc when it became clear we couldn't verify
+      retreat visually)
+      (Node2D + Sprite2D scene. Owner-colored via `modulate`. Arrow rotation via
+      `set_facing(from, to)`. `_process` reads live `army.current_edge` + `progress` and
+      lerps position each frame. S3's discrete-vs-continuous split realized.)
 
 ### Input & UI
 - [ ] `InputController`: click to select, click destination to issue move order
@@ -817,67 +912,181 @@
 
 ---
 
+### Session 7
+**Date:** 2026-07-03 → 2026-07 (multi-day, continued cadence with travel break mid-session)
+**Status:** Complete
+
+**Tasks completed:**
+- Verified S6 en-route collision detection end-to-end via dev key 5 (multi-army head-on).
+  The S6 field-name bug filed for S7 was a false alarm — dict key and read site both used
+  `is_reversed`, no fix needed. Trust-with-verification closed the gap once ArmyRenderer
+  landed.
+- **ArmyRenderer + ArmyNode** (mid-session addition — realized we couldn't verify retreat
+  visually without it). Node2D + Sprite2D scene. Owner-colored via `modulate`. Arrow
+  rotation via `set_facing(from, to)`. `_process` reads live `army.current_edge` +
+  `progress` and lerps position each frame. Boot order (a) applied uniformly:
+  `map_renderer.initialize` → `army_renderer.initialize` → `GameSimulation.initialize`.
+- **`RetreatArmyCommand` — Framing B.** Player-issued command; on validation the army
+  transitions to `RETREATING`, `current_edge` flips, `progress` inverts. `is_reversed`
+  field added then dropped — `state == RETREATING` carries the direction. Retreat
+  terminates at "nearest ally" on the reverse path. `_advance_army_to_next_hop` unmodified
+  (retreat never walks path backward past the first reverse hop).
+- **Mid-path capture continues.** Army winning a non-terminal territory fight survives,
+  updates composition, advances to next hop. Dissolve-vs-advance decision moved from
+  integrator to orchestrator. `_apply_combat_result` territory-WIN no longer dissolves the
+  army or emits `army_dissolved`; `_on_army_arrived_at_hop` decides.
+- **Conquest cooldown** as Phase 1 stub for Phase 3's `ConquestCooldownModifier`.
+  Presence-in-dict as flag (no sentinel `0.0`). Set at capture in `_apply_combat_result`.
+  Decremented in `_process`. Checked in `_on_production_tick`.
+- Dev keys 5/6/7 added. Key 5: multi-army head-on. Key 6: retreat first in-flight human
+  army. Key 7: multi-hop advance (rivermouth → breadlands via neutral sunken_road, exercises
+  mid-path capture continuation).
+
+**Concepts taught:**
+- **Framing B for retreat.** The design doc conflated a game rule ("what happens on head-on
+  collision") with a mechanism ("automatic pushback"). Framing B reframes retreat as a
+  player Command, restoring the S4 invariant that all player actions flow through
+  `CommandBus`. User-originated during Concept phase.
+- **Layer refactor: dissolve decision belongs in orchestrator.** S6's three-layer split
+  said the integrator applies world-state mutations from a `CombatResult`; termination
+  decisions depending on path context (final hop? retreating?) escalate to the orchestrator.
+  Under mid-path capture semantics, the "dissolve on WIN" call the integrator was making
+  became context-dependent, forcing the pull-up. Same-branch collapse
+  (`if final_hop or retreating: dissolve else: advance`) is the diagnostic signal that the
+  layering is right.
+- **`@onready` timing gotcha.** `@onready` fields don't populate until the node enters the
+  scene tree (via `add_child` or scene instantiation). Any method that touches an
+  `@onready` field must be called *after* the node is in the tree. Caused a null-crash
+  mid-implementation on `ArmyNode._sprite` before we reordered `set_owner_color` after
+  `add_child`.
+- **`.new()` vs `.instantiate()`.** `.new()` gives you the script/class only; children
+  from the `.tscn` don't exist. `.instantiate()` loads the full scene structure. User
+  went with the scene approach (option B) for ArmyNode; the initial `.new()` was one of
+  two stacked bugs.
+- **`Sprite2D.modulate` for one-asset owner theming.** White interior + black outline
+  asset, multiply-tinted per owner. Cheap.
+- **S3 payoff: discrete-signals + continuous-local-read realized in code.** ArmyRenderer
+  subscribes to `army_spawned` + `army_dissolved` only. `army_advanced_hop` is redundant
+  for position rendering because the sim mutates `current_edge` in place; the renderer's
+  live reference sees the mutation on the next frame automatically. Signal stays for
+  future consumers (audio, AI); the renderer just doesn't happen to need it.
+- **Godot signals are synchronous by default.** Reinforced from S3 when user asked about
+  timing race between `_apply_combat_result` and spawning a continuation army. `emit()`
+  runs all handlers before returning; `queue_free` is the one thing that's actually
+  deferred (end-of-frame). No async concerns for intra-frame mutations.
+- **Command-pattern extension: adding `RetreatArmyCommand` is additive.** No changes to
+  existing MoveArmyCommand path, no changes to combat, no changes to renderer. The
+  Command pattern paid off exactly as S4 promised.
+- **Stub-for-abstraction discipline.** Conquest cooldown is a stub for Phase 3's modifier
+  chain. Don't build the `TerritoryModifier` base class from one concrete example — wait
+  for Phase 3's `Fortification`/`Barracks`/`Watchtower` to pull the base-class contract
+  into shape. The inline check gets extracted then; the shape isn't invented up front.
+- **Presence-vs-sentinel (user-originated).** Cooldown state uses presence in dict as the
+  flag; no `0.0` for "not on cooldown." User chose this over the sentinel-based version
+  Claude sketched and the design landed cleaner. Same "one representation, not two"
+  principle applied elsewhere in the codebase.
+- **When NOT to use signals.** User's first instinct on cooldown was to hook `territory_owner_changed`.
+  Corrected: signals are for cross-system decoupling; using them within `GameSimulation`
+  to communicate with itself reintroduces indirection you paid to remove. Also, that
+  signal fires on more cases than you want (initial territory assignment at boot).
+
+**Claude observations:**
+- **Session's biggest architectural move was user-originated** (Framing B for retreat).
+  User caught the design-doc confusion during my Concept setup and pushed back cleanly.
+  When I articulated the two framings and asked for lock-in, user chose B without
+  hesitation. Real pattern-selection origination, and the *most* significant one across
+  the whole project so far — it deleted half the retreat implementation.
+- **User's YAGNI muscle is developing.** Two examples in one session: added
+  `is_reversed`, then noticed it was redundant with `state == RETREATING` and asked to
+  drop it; sketched cooldown with presence-in-dict instead of the sentinel-based version I
+  proposed. In R3 they self-diagnosed "I tend to over-engineer" — the muscle to catch
+  themselves is active practice.
+- **User pushed back on principle-naming reflex.** Reflect phase: user flagged that
+  driving-toward-a-principle-name pattern often lands on a slightly-more-succinct
+  restatement of what they already understand. Specifically called out "eliminate
+  representable-but-nonsensical states" as academic-feeling. Feedback saved as memory
+  (`feedback_principle_naming_restraint.md`). Adjust: name only load-bearing patterns
+  (State Machine, Strategy, Command, IoC, Observer); for local refinements, let their
+  reasoning stand.
+- **Trust-with-verification improved through the session.** Multiple test scenarios run
+  explicitly (dev key 4, 5, 6, 7 all confirmed). S6's "unverified before claiming done"
+  gap didn't recur.
+- **File-size worry has grown legitimate.** `GameSimulation` is now ~300 lines with
+  cooldown, mid-path capture refactor, retreat, en-route collision, combat integrator.
+  Still readable but crossing where subsystem extraction becomes reasonable. Collision
+  detection is the natural next extraction candidate — user articulated the API in S6 R3
+  (`find_collisions(armies) -> Array[CollisionEvent]`).
+- **Session ran multi-day across a travel break** — user paused mid-implementation and
+  resumed cleanly. The dev-keys + working ArmyRenderer made the resume friction low. This
+  is the third multi-day session (S5, S6, S7); the cadence is fine.
+- **The Concept phase went slightly long on retreat.** Framing B debate took ~30 min
+  before scaffold. Worth it — the reframe reshaped the whole implementation — but note
+  that when a Concept phase reveals a real design ambiguity, the debate IS the
+  concept-phase learning. Don't rush past it.
+- **ArmyRenderer being needed mid-session was a real oversight in Phase 1 task
+  decomposition.** Not in the original checklist; only surfaced when we realized we
+  couldn't visually verify retreat. Filing observation: any future *simulation-side*
+  feature that produces new observable state needs a paired renderer task in the
+  checklist. This will bite again with Phase 1 visibility (VisibilitySystem needs
+  renderer-side visibility handling, not just sim compute).
+
+**User's Self-Assessment (verbatim):**
+"I feel good, i did all the coding myself and feel a good ownership of the material. As a side note, i'm not sure how i feel about the excessive questions on principle names. Some of the time it feels like we're driving at a principle name, then the name comes and it's not even a name, just a slightly more succint description of what i understand already. I'd prefer to stick to a few core principles and designs that i nail home like the game simulation command/event bus architecture, the renderer architecture, etc. I feel driving home to me 'but the more precise principle is \"eliminate representable-but-nonsensical states.\"' isn't really helpful"
+
+---
+
 ## Carry-Forward Notes
 
 **User trajectory (long-running):**
-- **Pattern naming lags pattern application.** S6 reinforced the S5 read: user sketches
-  correct architectural shapes and reasons crisply about tradeoffs but doesn't always know
-  the textbook name when asked. Strategy pattern: when Claude asked "does this remind you
-  of anything?" user said no — but had already sketched the function-call-through-base-ref
-  shape correctly. **Diagnostic for S7+:** low-key disclosure question at each Concept
-  opening ("have you encountered X before?") — worked well for State Machine in S5 and
-  revealed partial Strategy exposure in S6. Costs nothing; calibrates depth.
-- **Pattern-selection origination edge** is genuinely progressing. S6 evidence: user
-  originated (a) the perspectiveless CombatContext / per-army outcomes shape that's
-  multi-party-compatible by signature, (b) the garrison-retreat-as-MoveArmyCommand reframe
-  unifying retreat under the Command pattern, (c) the subsystem-extraction criterion
-  unprompted in R3. The trend bends upward.
-- **Verification gap before claiming done.** S6 had one bug make it past review because user
-  said "implemented what i think is everything" without running the multi-army end-to-end
-  case. **Diagnostic for S7+:** explicitly request "run dev key 4 with the multi-army setup"
-  before accepting "done." Trust *with* verification.
-- **Subsystem extraction is now an active toolkit move**, not a deferred concern. User
-  *articulated the criterion themselves* in S6 R3 ("does this subsystem have a stable,
-  expressible interface?"). Apply this lens proactively in S7+: when `GameSimulation` grows
-  further, propose extracting collision detection as `EdgeCollisionDetector` with
-  `find_collisions(armies) -> Array[CollisionEvent]` as the signature the user already has
-  in their head.
+- **Pattern-selection origination is now consistently landing.** S7 evidence: Framing B
+  for retreat (biggest architectural move of the whole project so far — reshaped the
+  implementation, deleted half of what would've been built); presence-vs-sentinel for
+  cooldown; dropping `is_reversed` unprompted. The trend is no longer "bends upward" —
+  it's active. User can pick between design options with clear reasoning and often
+  originates the better option.
+- **Principle-naming: pull way back.** User feedback in S7 R (verbatim in the log): naming
+  local refinements with academic labels feels fabricated, not teaching payoff. Reserve
+  named-pattern moves for load-bearing beats they're building lasting mental models of
+  (Command, EventBus, State Machine, Strategy, IoC). For local refinements, let their
+  reasoning stand. See `feedback_principle_naming_restraint.md`.
+- **YAGNI muscle developing on user side.** S7 saw two catches: dropped `is_reversed`
+  after adding it; picked presence-vs-sentinel for cooldown without prompting. Self-diagnosis
+  in R3 was accurate: "I tend to over-engineer." Active practice, not just observation.
+- **Trust-with-verification improved.** S6's "unverified end-to-end" gap didn't recur in
+  S7. Multiple test scenarios (dev key 4/5/6/7) run explicitly. Continue to request
+  concrete test scenarios before accepting "done."
+- **Subsystem extraction is now overdue, not just candidate.** `GameSimulation` is ~300
+  lines with retreat + cooldown + mid-path capture + collision detection. Still readable
+  but pushing it. Collision detection is the specific candidate — the API is
+  `find_collisions(armies) -> Array[CollisionEvent]`, user has this in their head from
+  S6 R3.
 
-**Session 7 hooks (concrete to-dos for next session):**
-- **FIRST: throwaway fix of the `_find_collided_army` field-name bug** (game_simulation.gd
-  lines 261-262: `edge_obj.is_reversed` should be `edge_obj.reversed` to match the dict key
-  stored at line 70). Verify with multi-army head-on test (one human army from
-  `rivermouth_0_2`, one AI army from a position on the same edge in the opposite direction —
-  watch them meet mid-edge and resolve via `_resolve_edge_collision` → combat or merge as
-  appropriate).
-- **Then S7 main arc: Retreat + Conquest cooldown.** Per design doc:
-  - Phase 1 retreat: automatic `ArmyState` transition for the loser of a *head-on* edge
-    collision (legal only when met head-on; illegal when caught from behind — Phase 1's
-    uniform speed means same-direction overtake doesn't happen, so all edge collisions are
-    head-on and retreat eligibility is universal for now).
-  - Phase 1 retreat ≠ Phase 2/3 retreat. S6 reframe (filed in Open Questions): long-term,
-    retreat is a Command-layer concern (player issues `RetreatCommand` mid-fight, garrison
-    retreat is a constrained `MoveArmyCommand`). Phase 1's instant resolution doesn't have
-    a "during fight" moment, so it collapses to a state-machine transition. Implement
-    the Phase 1 form; flag the Phase 2/3 reframe in comments at the retreat call site so
-    we know where to come back.
-  - Conquest cooldown: when a territory is captured, set a cooldown timer (e.g. 10s). During
-    cooldown, production tick *skips* this territory. Stub-level: a `_cooldown_remaining`
-    field on the `Territory`-as-state-dict pattern, decremented each tick. The proper
-    `ConquestCooldownModifier` Resource (per design doc Phase 3 modifier-chain pattern)
-    lives in Phase 3.
-- **Watch the file-size lens.** If `GameSimulation` crosses ~400 lines or collision logic
-  grows significantly, propose collision detection extraction with the API the user already
-  has in their head (matches their R3 articulation).
-- **Phase 1 retreat raises a real design question deferred from S5:** does a retreating army
-  that wins an interception resume retreating or resume original mission? S5 decision said
-  "resume retreating, not mission." Verify this is still the call when implementing.
-
-**Open Question for Phase 2/3 (raised in S6):**
-- Garrison retreat as `MoveArmyCommand` variant. User-originated reframing: garrison can
-  decline defense by departing as a new army to an adjacent friendly territory. Mechanically
-  a constrained move ("destination ≠ attacker's source edge"). Defer until Phase 2/3 when
-  buildings/fortifications make "stand and die vs fall back" a more interesting choice.
+**Session 8 hooks (concrete to-dos for next session):**
+- **Main arc: `InputController` + partial army selection.** Replace dev keys 4/5/6/7
+  with mouse input. Design points:
+  - `InputController` is a scene sibling of `MapRenderer` and `ArmyRenderer`. Subscribes
+    to `EventBus.territory_clicked` (already emitted by `TerritoryNode._on_territory_input`).
+    Also needs an army click channel — armies aren't clickable yet, so this is either
+    (a) add `Area2D` + `CollisionShape2D` to `ArmyNode` and emit `army_clicked` on
+    input, or (b) hit-test manually in InputController. Ask user to pick.
+  - Selection state machine: `Idle` → `TerritorySelected` (armed for move order) →
+    (target territory clicked) → issues `MoveArmyCommand`, back to `Idle`.
+    Also: `ArmySelected` state for the retreat/redirect branch.
+  - Partial army selection UI: three modes per design doc — all / proportional slice /
+    specific troop type count. Might need a small modal or number-input widget; keep
+    minimal.
+  - `InputController` never mutates state directly — it translates click events into
+    Commands via `CommandBus.submit`. Same pipeline the AI will use in S12.
+- **Design refinement worth revisiting during S8:** garrison-panel display for the
+  selected territory. This is the entry point for HUD work (S9). Consider whether S8
+  wants to build a minimal TerritoryPanel or defer to S9.
+- **Watch the file-size lens.** If `GameSimulation` gains any significant new logic in
+  S8, propose collision-detection extraction as `EdgeCollisionDetector` with the API
+  user articulated. Or just do it as a proactive refactor at start of S8.
+- **Renderer-task decomposition gap** (S7 observation): any sim-side feature that produces
+  new observable state needs a paired renderer task in the checklist. Will bite again on
+  VisibilitySystem — plan for renderer-side visibility work in the same session, not as
+  an afterthought.
 
 **Long-horizon flags:**
 - **Session cadence.** User confirmed multi-day session spans (S5 ran across three calendar

@@ -1,0 +1,18 @@
+[gd_scene format=3 uid="uid://l1xhv0gwb0gg"]
+
+[ext_resource type="Script" uid="uid://7odxbagxl5eu" path="res://scripts/renderers/army_node.gd" id="1_4np1g"]
+[ext_resource type="Texture2D" uid="uid://dwd4wbnhcjl8j" path="res://assets/army_sprite.png" id="2_w4qyl"]
+
+[node name="ArmyNode" type="Node2D" unique_id=410686803]
+script = ExtResource("1_4np1g")
+
+[node name="Sprite2D" type="Sprite2D" parent="." unique_id=2076866991]
+texture = ExtResource("2_w4qyl")
+
+[node name="ArmySizeLabel" type="Label" parent="." unique_id=1042574032]
+offset_left = -20.0
+offset_top = -29.0
+offset_right = 20.0
+offset_bottom = -6.0
+horizontal_alignment = 1
+vertical_alignment = 1
